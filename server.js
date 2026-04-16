@@ -422,9 +422,11 @@ var SEARCH_PROMPT = [
   "- rank: first=top, second=good, third=alternative, fourth=alternative",
   "- ONLY suggest parts that ACTUALLY EXIST on Digi-Key with real stock",
   "- Use FULL exact part numbers as listed on Digi-Key",
-  "- Only use well-known manufacturers: Infineon, Vishay, ON Semi, TI, STMicro,",
-  "  Analog Devices, Microchip, Renesas, Rohm, Nexperia, Diodes Inc",
+  //"- Only use well-known manufacturers: Infineon, Vishay, ON Semi, TI, STMicro,",
+  //"  Analog Devices, Microchip, Renesas, Rohm, Nexperia, Diodes Inc",
   "- ALL parts must meet or EXCEED requested specifications",
+  "  show parts only in stock"
+  "compare each parameter in digikey"
   "- Include exactly 5 keySpecs per part:",
   "  1. Main voltage rating, 2. Main current rating, 3. Key performance spec,",
   "  4. Secondary spec, 5. Package",
