@@ -795,6 +795,11 @@ app.post("/api/stock", async function(req, res) {
   }
 });
 
+app.get("/api/health", function(req, res) {
+  res.json({ status: "ok", service: "PartTensor", time: new Date().toISOString() });
+});
+
+
 // =============================================
 // START SERVER
 // =============================================
