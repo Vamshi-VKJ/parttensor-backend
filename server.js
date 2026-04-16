@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 
-console.log("=== Silicore Backend Starting ===");
+console.log("=== PartTensor Backend Starting ===");
 console.log("Anthropic key:", process.env.ANTHROPIC_API_KEY ? "OK" : "MISSING");
 console.log("DigiKey client ID:", process.env.DIGIKEY_CLIENT_ID ? "OK" : "MISSING");
 console.log("Mouser API key:", process.env.MOUSER_API_KEY ? "OK" : "MISSING");
@@ -31,37 +31,25 @@ function setCache(cache, key, data, ttl) {
 
 // =============================================
 // COMPONENT TYPE CLASSIFIER
-// Determines if a part is semiconductor or passive/connector
 // =============================================
-var SEMICONDUCTOR_CATEGORIES = [
-  "mosfet", "transistor", "igbt", "bjt", "op-amp", "opamp", "amplifier",
-  "comparator", "regulator", "ldo", "dc-dc", "converter", "controller",
-  "gate driver", "motor driver", "driver", "diode", "rectifier", "schottky",
-  "zener", "tvs", "esd", "optocoupler", "oscillator", "microcontroller",
-  "mcu", "sensor", "dac", "adc", "reference", "buffer", "logic",
-];
-
-var PASSIVE_CONNECTOR_CATEGORIES = [
-  "connector", "receptacle", "plug", "socket", "header", "terminal",
-  "resistor", "capacitor", "inductor", "ferrite", "crystal", "resonator",
-  "transformer", "relay", "switch", "fuse", "varistor", "thermistor",
-  "potentiometer", "trimmer", "antenna", "filter", "balun", "coupler",
-  "mmcx", "sma", "bnc", "rj45", "usb", "hdmi", "rf connector",
-  "coax", "coaxial", "jack", "pin header", "wire to board",
-  "board to board", "d-sub", "circular", "fiber", "optical",
-  "power connector", "battery connector", "cable assembly",
+var PASSIVE_CONNECTOR_KEYWORDS = [
+  "connector", "receptacle", "plug", "socket", "jack", "header",
+  "terminal", "contact", "coax", "coaxial", "mmcx", "sma", "bnc",
+  "rj", "usb ", "hdmi", "fiber", "circular", "d-sub",
+  "resistor", "capacitor", "inductor", "ferrite", "crystal",
+  "resonator", "transformer", "relay", "switch", "fuse",
+  "varistor", "thermistor", "potentiometer", "trimmer",
+  "antenna", "filter", "balun", "rf ", "pcb mount",
+  "through hole", "surface mount connector",
+  "wire to board", "board to board", "cable", "crimp",
 ];
 
 function classifyComponent(description, categoryName) {
   var text = ((description || "") + " " + (categoryName || "")).toLowerCase();
-
-  for (var i = 0; i < SEMICONDUCTOR_CATEGORIES.length; i++) {
-    if (text.indexOf(SEMICONDUCTOR_CATEGORIES[i]) !== -1) return "semiconductor";
+  for (var i = 0; i < PASSIVE_CONNECTOR_KEYWORDS.length; i++) {
+    if (text.indexOf(PASSIVE_CONNECTOR_KEYWORDS[i]) !== -1) return "passive_connector";
   }
-  for (var j = 0; j < PASSIVE_CONNECTOR_CATEGORIES.length; j++) {
-    if (text.indexOf(PASSIVE_CONNECTOR_CATEGORIES[j]) !== -1) return "passive_connector";
-  }
-  return "semiconductor"; // default to semiconductor path
+  return "semiconductor";
 }
 
 // =============================================
@@ -90,6 +78,7 @@ async function getDigikeyToken() {
       console.log("DigiKey token refreshed");
       return digikeyToken;
     }
+    console.error("DigiKey token error:", JSON.stringify(data));
     return null;
   } catch (e) { console.error("DigiKey token failed:", e.message); return null; }
 }
@@ -102,38 +91,19 @@ async function fetchOriginalPart(mpn) {
     const fetch = (await import("node-fetch")).default;
     var token = await getDigikeyToken();
     if (!token) return null;
-
     console.log("Fetching original part:", mpn);
-
     var product = null;
     var res = await fetch(
       "https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn) + "/productdetails",
-      {
-        method: "GET",
-        headers: {
-          "Authorization": "Bearer " + token,
-          "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID,
-          "X-DIGIKEY-Locale-Site": "US",
-          "X-DIGIKEY-Locale-Language": "en",
-          "X-DIGIKEY-Locale-Currency": "USD",
-        },
-      }
+      { method: "GET", headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
     );
-
     if (res.ok) {
       var data = await res.json();
       product = data.Product || data;
     } else {
       var res2 = await fetch("https://api.digikey.com/products/v4/search/keyword", {
         method: "POST",
-        headers: {
-          "Authorization": "Bearer " + token,
-          "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID,
-          "X-DIGIKEY-Locale-Site": "US",
-          "X-DIGIKEY-Locale-Language": "en",
-          "X-DIGIKEY-Locale-Currency": "USD",
-          "Content-Type": "application/json",
-        },
+        headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD", "Content-Type": "application/json" },
         body: JSON.stringify({ Keywords: mpn, Limit: 3, Offset: 0 }),
       });
       if (!res2.ok) return null;
@@ -142,55 +112,34 @@ async function fetchOriginalPart(mpn) {
       if (prods.length === 0) return null;
       product = prods[0];
     }
-
     if (!product) return null;
-
     var parameters = product.Parameters || [];
-    var specs = {};
-    var specsText = [];
-    var keyParamsForSearch = [];
-
+    var specs = {}, specsText = [];
     for (var i = 0; i < parameters.length; i++) {
       var param = parameters[i];
       var name = (param.Parameter || "").toLowerCase();
       var value = param.Value || "";
       specsText.push(param.Parameter + ": " + value);
-
       var numVal = parseFloat(value);
-
-      if ((name.includes("voltage") || name === "vds" || name === "vce" || name.includes("breakdown")) && !isNaN(numVal) && !specs.voltage) specs.voltage = numVal;
-      if ((name.includes("continuous") && name.includes("current") || name === "id" || name === "ic" || name.includes("output current")) && !isNaN(numVal) && !specs.current) specs.current = numVal;
+      if ((name.includes("voltage") || name === "vds" || name === "vce") && !isNaN(numVal) && !specs.voltage) specs.voltage = numVal;
+      if ((name.includes("continuous") && name.includes("current") || name === "id" || name === "ic") && !isNaN(numVal) && !specs.current) specs.current = numVal;
       if ((name.includes("rds") || name.includes("resistance")) && !isNaN(numVal) && !specs.resistance) specs.resistance = numVal;
       if (name.includes("power") && name.includes("dissipation") && !isNaN(numVal) && !specs.power) specs.power = numVal;
       if (name.includes("capacitance") && !isNaN(numVal) && !specs.capacitance) specs.capacitance = numVal;
       if (name.includes("inductance") && !isNaN(numVal) && !specs.inductance) specs.inductance = numVal;
       if ((name.includes("bandwidth") || name.includes("gbw")) && !isNaN(numVal) && !specs.bandwidth) specs.bandwidth = numVal;
-
-      // Collect key params for DigiKey search URL
-      if (keyParamsForSearch.length < 5 && value) {
-        keyParamsForSearch.push(encodeURIComponent(param.Parameter) + "=" + encodeURIComponent(value));
-      }
     }
-
     var categoryName = product.Category && product.Category.Name || "";
     var description = product.Description && product.Description.ProductDescription || "";
     var componentType = classifyComponent(description, categoryName);
-
-    // Build DigiKey search URL for passives/connectors
-    var digikeySearchUrl = "https://www.digikey.com/en/products/filter/" +
-      encodeURIComponent(product.ManufacturerProductNumber || mpn) +
-      "?stock=1";
-
-    // Also build a category search URL
-    var categorySearchUrl = null;
+    var searchKeyword = description.replace(/[^a-zA-Z0-9\s]/g, " ").split(/\s+/).filter(function(w) { return w.length > 2; }).slice(0, 5).join(" ");
+    var dkSearchUrl = "https://www.digikey.com/en/products/result?keywords=" + encodeURIComponent(searchKeyword) + "&stock=1";
+    var mouserSearchUrl = "https://www.mouser.com/Search/Refine?Keyword=" + encodeURIComponent(searchKeyword) + "&inStock=1";
+    var octopartUrl = "https://octopart.com/search?q=" + encodeURIComponent(searchKeyword) + "&in_stock=1";
     if (product.Category && product.Category.CategoryId) {
-      categorySearchUrl = "https://www.digikey.com/en/products/filter?stock=1&categoryId=" +
-        product.Category.CategoryId;
+      dkSearchUrl = "https://www.digikey.com/en/products/result?keywords=" + encodeURIComponent(searchKeyword) + "&stock=1&categoryId=" + product.Category.CategoryId;
     }
-
-    console.log("Part type:", componentType, "| Category:", categoryName);
-    console.log("Specs:", JSON.stringify(specs));
-
+    console.log("Part type:", componentType, "| Category:", categoryName, "| Specs:", JSON.stringify(specs));
     return {
       mpn: product.ManufacturerProductNumber || mpn,
       manufacturer: product.Manufacturer && product.Manufacturer.Name || "",
@@ -201,15 +150,12 @@ async function fetchOriginalPart(mpn) {
       package: product.PackageType || "",
       specs: specs,
       specsText: specsText.slice(0, 15).join("; "),
-      digikeySearchUrl: digikeySearchUrl,
-      categorySearchUrl: categorySearchUrl,
+      dkSearchUrl: dkSearchUrl,
+      mouserSearchUrl: mouserSearchUrl,
+      octopartUrl: octopartUrl,
       stock: product.QuantityAvailable || 0,
-      parameters: parameters,
     };
-  } catch (e) {
-    console.error("fetchOriginalPart failed:", e.message);
-    return null;
-  }
+  } catch (e) { console.error("fetchOriginalPart failed:", e.message); return null; }
 }
 
 // =============================================
@@ -220,62 +166,29 @@ async function lookupDigikey(mpn) {
     const fetch = (await import("node-fetch")).default;
     var token = await getDigikeyToken();
     if (!token) return null;
-
     var res = await fetch(
       "https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn) + "/productdetails",
-      {
-        method: "GET",
-        headers: {
-          "Authorization": "Bearer " + token,
-          "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID,
-          "X-DIGIKEY-Locale-Site": "US",
-          "X-DIGIKEY-Locale-Language": "en",
-          "X-DIGIKEY-Locale-Currency": "USD",
-        },
-      }
+      { method: "GET", headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
     );
-
     if (res.ok) {
       var data = await res.json();
       var product = data.Product || data;
       var unitPrice = product.UnitPrice || (product.StandardPricing && product.StandardPricing[0] && product.StandardPricing[0].UnitPrice) || null;
-      return {
-        found: true, distributor: "Digi-Key", stock: product.QuantityAvailable || 0,
-        price: unitPrice ? "$" + parseFloat(unitPrice).toFixed(3) : null,
-        url: product.ProductUrl || "https://www.digikey.com/en/products/filter/" + encodeURIComponent(mpn),
-        matchedPart: product.ManufacturerProductNumber || mpn,
-      };
+      return { found: true, distributor: "Digi-Key", stock: product.QuantityAvailable || 0, price: unitPrice ? "$" + parseFloat(unitPrice).toFixed(3) : null, url: product.ProductUrl || "https://www.digikey.com/en/products/filter/" + encodeURIComponent(mpn), matchedPart: product.ManufacturerProductNumber || mpn };
     }
-
     var res2 = await fetch("https://api.digikey.com/products/v4/search/keyword", {
       method: "POST",
-      headers: {
-        "Authorization": "Bearer " + token,
-        "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID,
-        "X-DIGIKEY-Locale-Site": "US",
-        "X-DIGIKEY-Locale-Language": "en",
-        "X-DIGIKEY-Locale-Currency": "USD",
-        "Content-Type": "application/json",
-      },
+      headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD", "Content-Type": "application/json" },
       body: JSON.stringify({ Keywords: mpn, Limit: 5, Offset: 0, FilterOptionsRequest: { InStock: false } }),
     });
-
     if (!res2.ok) return null;
     var data2 = await res2.json();
     var products = data2.Products || [];
     if (products.length === 0) return null;
-
     var best = products[0];
-    for (var i = 0; i < products.length; i++) {
-      if ((products[i].QuantityAvailable || 0) > (best.QuantityAvailable || 0)) best = products[i];
-    }
+    for (var i = 0; i < products.length; i++) { if ((products[i].QuantityAvailable || 0) > (best.QuantityAvailable || 0)) best = products[i]; }
     var unitPrice2 = best.UnitPrice || (best.StandardPricing && best.StandardPricing[0] && best.StandardPricing[0].UnitPrice) || null;
-    return {
-      found: true, distributor: "Digi-Key", stock: best.QuantityAvailable || 0,
-      price: unitPrice2 ? "$" + parseFloat(unitPrice2).toFixed(3) : null,
-      url: best.ProductUrl || "https://www.digikey.com/en/products/filter/" + encodeURIComponent(mpn),
-      matchedPart: best.ManufacturerProductNumber || mpn,
-    };
+    return { found: true, distributor: "Digi-Key", stock: best.QuantityAvailable || 0, price: unitPrice2 ? "$" + parseFloat(unitPrice2).toFixed(3) : null, url: best.ProductUrl || "https://www.digikey.com/en/products/filter/" + encodeURIComponent(mpn), matchedPart: best.ManufacturerProductNumber || mpn };
   } catch (e) { console.error("DigiKey lookup failed for " + mpn + ":", e.message); return null; }
 }
 
@@ -285,39 +198,74 @@ async function lookupDigikey(mpn) {
 async function lookupMouser(mpn) {
   try {
     const fetch = (await import("node-fetch")).default;
-    var res = await fetch(
-      "https://api.mouser.com/api/v1/search/partnumber?apiKey=" + process.env.MOUSER_API_KEY,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: mpn, partSearchOptions: "Begins With" } }) }
-    );
+    var res = await fetch("https://api.mouser.com/api/v1/search/partnumber?apiKey=" + process.env.MOUSER_API_KEY, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: mpn, partSearchOptions: "Begins With" } }),
+    });
     if (res.ok) {
       var data = await res.json();
       var parts = data.SearchResults && data.SearchResults.Parts;
       if (parts && parts.length > 0) {
         var best = parts[0];
-        for (var i = 0; i < parts.length; i++) {
-          if (parseInt((parts[i].Availability || "0").replace(/[^0-9]/g, "")) > parseInt((best.Availability || "0").replace(/[^0-9]/g, ""))) best = parts[i];
-        }
+        for (var i = 0; i < parts.length; i++) { if (parseInt((parts[i].Availability || "0").replace(/[^0-9]/g, "")) > parseInt((best.Availability || "0").replace(/[^0-9]/g, ""))) best = parts[i]; }
         var stock = parseInt((best.Availability || "0").replace(/[^0-9]/g, "")) || 0;
         var price = best.PriceBreaks && best.PriceBreaks[0] && best.PriceBreaks[0].Price;
         return { found: true, distributor: "Mouser", stock: stock, price: price || null, url: best.ProductDetailUrl || "https://www.mouser.com/Search/Refine?Keyword=" + encodeURIComponent(mpn), matchedPart: best.ManufacturerPartNumber || mpn };
       }
     }
-    var res2 = await fetch(
-      "https://api.mouser.com/api/v1/search/keyword?apiKey=" + process.env.MOUSER_API_KEY,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ SearchByKeywordRequest: { keyword: mpn, records: 5, startingRecord: 0, searchOptions: "BeginsWith" } }) }
-    );
+    var res2 = await fetch("https://api.mouser.com/api/v1/search/keyword?apiKey=" + process.env.MOUSER_API_KEY, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ SearchByKeywordRequest: { keyword: mpn, records: 5, startingRecord: 0, searchOptions: "BeginsWith" } }),
+    });
     if (!res2.ok) return null;
     var data2 = await res2.json();
     var parts2 = data2.SearchResults && data2.SearchResults.Parts;
     if (!parts2 || parts2.length === 0) return null;
     var best2 = parts2[0];
-    for (var j = 0; j < parts2.length; j++) {
-      if (parseInt((parts2[j].Availability || "0").replace(/[^0-9]/g, "")) > parseInt((best2.Availability || "0").replace(/[^0-9]/g, ""))) best2 = parts2[j];
-    }
+    for (var j = 0; j < parts2.length; j++) { if (parseInt((parts2[j].Availability || "0").replace(/[^0-9]/g, "")) > parseInt((best2.Availability || "0").replace(/[^0-9]/g, ""))) best2 = parts2[j]; }
     var stock2 = parseInt((best2.Availability || "0").replace(/[^0-9]/g, "")) || 0;
     var price2 = best2.PriceBreaks && best2.PriceBreaks[0] && best2.PriceBreaks[0].Price;
     return { found: true, distributor: "Mouser", stock: stock2, price: price2 || null, url: best2.ProductDetailUrl || "https://www.mouser.com/Search/Refine?Keyword=" + encodeURIComponent(mpn), matchedPart: best2.ManufacturerPartNumber || mpn };
   } catch (e) { console.error("Mouser lookup failed for " + mpn + ":", e.message); return null; }
+}
+
+// =============================================
+// PRE-FETCH STOCK FOR ALL PARTS
+// Called before sending response to frontend
+// So results arrive with stock data already included
+// =============================================
+async function prefetchStock(partNumbers) {
+  var stockResults = {};
+  for (var si = 0; si < partNumbers.length; si++) {
+    var mpn = partNumbers[si];
+    if (!mpn) continue;
+    var cached = getCached(stockCache, mpn);
+    if (cached) { stockResults[mpn] = cached; console.log("  Stock cache hit:", mpn); continue; }
+    var results = await Promise.all([lookupDigikey(mpn), lookupMouser(mpn)]);
+    var dk = results[0], mouser = results[1];
+    var total = (dk ? dk.stock : 0) + (mouser ? mouser.stock : 0);
+    var bestPrice = null, bestPriceSource = null;
+    if (dk && dk.price) { bestPrice = dk.price; bestPriceSource = "Digi-Key"; }
+    if (mouser && mouser.price) {
+      var mv = parseFloat((mouser.price || "999").replace(/[^0-9.]/g, "")) || 999;
+      var cv = parseFloat((bestPrice || "999").replace(/[^0-9.]/g, "")) || 999;
+      if (mv < cv) { bestPrice = mouser.price; bestPriceSource = "Mouser"; }
+    }
+    var distributors = [];
+    if (dk && dk.stock > 0) distributors.push({ name: "Digi-Key", stock: dk.stock, price: dk.price, url: dk.url });
+    if (mouser && mouser.stock > 0) distributors.push({ name: "Mouser", stock: mouser.stock, price: mouser.price, url: mouser.url });
+    distributors.sort(function(a, b) { return b.stock - a.stock; });
+    var sr = {
+      found: total > 0, totalStock: total,
+      bestPrice: bestPrice, bestPriceSource: bestPriceSource,
+      distributors: distributors, digikey: dk, mouser: mouser,
+      octopartUrl: "https://octopart.com/search?q=" + encodeURIComponent(mpn),
+    };
+    setCache(stockCache, mpn, sr, STOCK_TTL);
+    stockResults[mpn] = sr;
+    console.log("  Stock:", mpn, "-> DK:", dk ? dk.stock : "N/A", "| MO:", mouser ? mouser.stock : "N/A");
+  }
+  return stockResults;
 }
 
 // =============================================
@@ -355,21 +303,16 @@ function validateSpecs(parts, req) {
   var MATCH = { capacitance: ["capacitance"], inductance: ["inductance"] };
   var validated = [];
   for (var pi = 0; pi < parts.length; pi++) {
-    var part = parts[pi];
-    var passes = true;
-    var reason = "";
+    var part = parts[pi], passes = true, reason = "";
     if (part.keySpecs && Array.isArray(part.keySpecs)) {
       for (var i = 0; i < part.keySpecs.length && passes; i++) {
-        var spec = part.keySpecs[i];
-        var label = (spec.label || "").toLowerCase().trim();
-        var value = parseFloat(spec.value);
+        var spec = part.keySpecs[i], label = (spec.label || "").toLowerCase().trim(), value = parseFloat(spec.value);
         if (isNaN(value)) continue;
         for (var param in EXCEED) {
           if (!req[param]) continue;
           for (var li = 0; li < EXCEED[param].length; li++) {
             if (label === EXCEED[param][li] || label.indexOf(EXCEED[param][li]) !== -1) {
-              if (value < req[param] * 0.95) { reason = spec.label + "=" + value + " < " + req[param]; passes = false; }
-              break;
+              if (value < req[param] * 0.95) { reason = spec.label + "=" + value + " < " + req[param]; passes = false; } break;
             }
           }
           if (!passes) break;
@@ -378,23 +321,20 @@ function validateSpecs(parts, req) {
           if (!req[mp]) continue;
           for (var mli = 0; mli < MATCH[mp].length; mli++) {
             if (label === MATCH[mp][mli] || label.indexOf(MATCH[mp][mli]) !== -1) {
-              if (Math.abs(value - req[mp]) / req[mp] > 0.20) { reason = spec.label + "=" + value + " != " + req[mp]; passes = false; }
-              break;
+              if (Math.abs(value - req[mp]) / req[mp] > 0.20) { reason = spec.label + "=" + value + " != " + req[mp]; passes = false; } break;
             }
           }
           if (!passes) break;
         }
       }
     }
-    if (!passes) { console.log("  SPEC REJECTED", part.partNumber + ":", reason); }
-    else validated.push(part);
+    if (!passes) { console.log("  SPEC REJECTED", part.partNumber + ":", reason); } else validated.push(part);
   }
   return validated.length > 0 ? validated : parts;
 }
 
 function parseSpecsFromQuery(query) {
-  var lower = query.toLowerCase();
-  var req = {};
+  var lower = query.toLowerCase(), req = {};
   var vm = lower.match(/(\d+(?:\.\d+)?)\s*v\b/); if (vm) req.voltage = parseFloat(vm[1]);
   var am = lower.match(/(\d+(?:\.\d+)?)\s*a\b/); if (am) req.current = parseFloat(am[1]);
   var wm = lower.match(/(\d+(?:\.\d+)?)\s*w\b/); if (wm) req.power = parseFloat(wm[1]);
@@ -404,41 +344,18 @@ function parseSpecsFromQuery(query) {
 }
 
 function isAlternativeQuery(query) {
-  var lower = query.toLowerCase();
-  var kw = ["alternative", "alternatives", "alt", "replacement", "replace", "substitute",
-    "equivalent", "similar to", "instead of", "out of stock", "unavailable", "cheaper",
-    "cross reference", "crossref", "drop in", "drop-in"];
+  var lower = query.toLowerCase(), kw = ["alternative", "alternatives", "alt", "replacement", "replace", "substitute", "equivalent", "similar to", "instead of", "out of stock", "unavailable", "cheaper", "cross reference", "crossref", "drop in", "drop-in"];
   for (var i = 0; i < kw.length; i++) { if (lower.indexOf(kw[i]) !== -1) return true; }
   return false;
 }
 
 function extractPartNumber(query) {
-  // Remove common words that are not part numbers
-  var lower = query.toLowerCase();
-  var stopWords = ["alternative", "alternatives", "alt", "replacement", "replace",
-    "substitute", "equivalent", "similar", "instead", "stock", "unavailable",
-    "cheaper", "cross", "reference", "drop", "find", "for", "me", "the", "a", "an"];
-
-  // Pattern 1: Standard part numbers starting with letters e.g. IRF540N, LM358
   var matches1 = query.match(/\b([A-Z]{1,6}[0-9]{2,}[A-Z0-9\-]*)\b/gi) || [];
-
-  // Pattern 2: Part numbers starting with digits e.g. 1-966066-0, 0734151001
   var matches2 = query.match(/\b([0-9]+[\-][0-9A-Z][\-0-9A-Z]*)\b/gi) || [];
-
-  // Pattern 3: All-numeric part numbers e.g. 0734151001
   var matches3 = query.match(/\b([0-9]{7,})\b/gi) || [];
-
-  var allMatches = matches1.concat(matches2).concat(matches3);
-
-  // Remove stop words and short matches
-  allMatches = allMatches.filter(function(m) {
-    return stopWords.indexOf(m.toLowerCase()) === -1 && m.length >= 4;
-  });
-
-  if (allMatches.length === 0) return null;
-
-  // Return longest match — most likely to be full part number
-  return allMatches.sort(function(a, b) { return b.length - a.length; })[0];
+  var all = matches1.concat(matches2).concat(matches3).filter(function(m) { return m.length >= 4; });
+  if (all.length === 0) return null;
+  return all.sort(function(a, b) { return b.length - a.length; })[0];
 }
 
 function extractJSON(text) {
@@ -458,25 +375,21 @@ async function callAI(system, query) {
   var models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"];
   for (var attempt = 1; attempt <= 3; attempt++) {
     var model = attempt <= 2 ? models[0] : models[1];
+    console.log("AI attempt", attempt, "using", model);
     try {
       var aiRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({ model: model, max_tokens: 3000, system: system, messages: [{ role: "user", content: query }] }),
+        body: JSON.stringify({ model: model, max_tokens: 4000, system: system, messages: [{ role: "user", content: query }] }),
       });
       var aiData = await aiRes.json();
-      if (aiData.error && aiData.error.type === "overloaded_error") {
-        await new Promise(function(r) { setTimeout(r, attempt * 3000); });
-        continue;
-      }
+      if (aiData.error && aiData.error.type === "overloaded_error") { await new Promise(function(r) { setTimeout(r, attempt * 3000); }); continue; }
       if (aiData.error) return { error: aiData.error.message };
       var text = (aiData.content || []).map(function(b) { return b.text || ""; }).join("");
       var parsed = extractJSON(text);
       if (!parsed) { if (attempt < 3) continue; return { error: "parse_failed" }; }
       return { data: parsed };
-    } catch (err) {
-      if (attempt < 3) await new Promise(function(r) { setTimeout(r, 2000); });
-    }
+    } catch (err) { if (attempt < 3) await new Promise(function(r) { setTimeout(r, 2000); }); }
   }
   return { error: "All retries failed." };
 }
@@ -505,7 +418,9 @@ var BOM_PROMPT = [
 var SEARCH_PROMPT = [
   "You are a senior application engineer. Find the best components for the described need.",
   "RULES:",
-  "- ONLY suggest parts that ACTUALLY EXIST on Digi-Key",
+  "- Suggest EXACTLY 4 results from 4 DIFFERENT manufacturers",
+  "- rank: first=top, second=good, third=alternative, fourth=alternative",
+  "- ONLY suggest parts that ACTUALLY EXIST on Digi-Key with real stock",
   "- Use FULL exact part numbers as listed on Digi-Key",
   "- Only use well-known manufacturers: Infineon, Vishay, ON Semi, TI, STMicro,",
   "  Analog Devices, Microchip, Renesas, Rohm, Nexperia, Diodes Inc",
@@ -523,51 +438,41 @@ var SEARCH_PROMPT = [
   "{\"label\":\"Qg\",\"value\":\"71\",\"unit\":\"nC\"},",
   "{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],",
   "\"package\":\"TO-220\",\"applications\":[\"Motor Drive\"],",
-  "\"rank\":\"top\",\"aeComment\":\"Meets all specs.\",\"caution\":null}],",
-  "\"designTip\":\"tip\"}",
+  "\"rank\":\"top\",\"aeComment\":\"Meets all specs. Widely available.\",\"caution\":null}],",
+  "\"designTip\":\"one practical tip\"}",
 ].join("\n");
 
-// Semiconductor alternative prompt — uses real specs from DigiKey
 function buildSemiconductorAltPrompt(originalPart) {
-  var specs = originalPart.specs || {};
-  var specLines = [];
-  if (specs.voltage) specLines.push("- Voltage rating >= " + specs.voltage + "V");
-  if (specs.current) specLines.push("- Current rating >= " + specs.current + "A");
-  if (specs.resistance) specLines.push("- On-resistance <= " + specs.resistance + " (lower is better)");
-  if (specs.power) specLines.push("- Power dissipation >= " + specs.power + "W");
-  if (specs.bandwidth) specLines.push("- Bandwidth >= " + specs.bandwidth);
-  if (specs.capacitance) specLines.push("- Capacitance within 20% of " + specs.capacitance);
-  if (specs.inductance) specLines.push("- Inductance within 20% of " + specs.inductance);
-
-  if (specLines.length === 0) {
-    specLines.push("- Match or exceed all specs of: " + originalPart.specsText.substring(0, 200));
-  }
-
+  var specs = originalPart.specs || {}, specLines = [];
+  if (specs.voltage) specLines.push("Voltage >= " + specs.voltage + "V");
+  if (specs.current) specLines.push("Current >= " + specs.current + "A");
+  if (specs.resistance) specLines.push("Rds/Ron <= " + specs.resistance);
+  if (specs.power) specLines.push("Power >= " + specs.power + "W");
+  if (specs.bandwidth) specLines.push("Bandwidth >= " + specs.bandwidth);
+  if (specs.capacitance) specLines.push("Capacitance within 20% of " + specs.capacitance);
+  if (specs.inductance) specLines.push("Inductance within 20% of " + specs.inductance);
+  if (specLines.length === 0) specLines.push("Match or exceed: " + originalPart.specsText.substring(0, 200));
   return [
     "You are a senior application engineer finding alternatives for:",
-    originalPart.mpn + " by " + originalPart.manufacturer,
-    "Description: " + originalPart.description,
-    "Category: " + originalPart.categoryName,
+    originalPart.mpn + " by " + originalPart.manufacturer + " — " + originalPart.description,
     "",
-    "REAL SPECS FROM DATASHEET (fetched from Digi-Key):",
-    specLines.join("\n"),
+    "REAL SPECS FROM DIGIKEY:",
+    specLines.join(", "),
     "",
-    "STRICT RULES:",
-    "- Find 3-5 alternatives that meet or exceed ALL specs listed above",
-    "- ONLY suggest parts that ACTUALLY EXIST on Digi-Key with real stock",
-    "- Use FULL exact part numbers as on Digi-Key",
-    "- From DIFFERENT manufacturers than " + originalPart.manufacturer,
+    "RULES:",
+    "- Find EXACTLY 4 alternatives from 4 DIFFERENT manufacturers",
+    "- All must meet or exceed every spec listed above",
+    "- ONLY parts that ACTUALLY EXIST on Digi-Key with real stock",
+    "- From different manufacturers than " + originalPart.manufacturer,
     "- Preferred: Infineon, Vishay, ON Semi, TI, STMicro, Analog Devices, Rohm, Renesas",
-    "- Include exactly 5 keySpecs per part with numeric values",
-    "- First spec must be voltage rating, second must be current rating",
-    "- NEVER suggest lower specs — if unsure, suggest higher specs",
+    "- Include exactly 5 keySpecs per part — first must be voltage, second must be current",
+    "- NEVER suggest lower specs in any parameter",
     "",
     "Respond ONLY raw JSON starting with {:",
     "{\"mode\":\"alt\",\"originalPart\":\"" + originalPart.mpn + "\",",
     "\"originalSpecs\":\"" + specLines.join(", ") + "\",",
-    "\"reason\":\"one sentence why alternatives are needed\",",
-    "\"alternatives\":[{",
-    "\"partNumber\":\"IRFB4115GPBF\",\"manufacturer\":\"Vishay\",",
+    "\"reason\":\"one sentence\",",
+    "\"alternatives\":[{\"partNumber\":\"IRFB4115GPBF\",\"manufacturer\":\"Vishay\",",
     "\"type\":\"N-Channel MOSFET\",\"compatibility\":\"drop-in\",",
     "\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"150\",\"unit\":\"V\"},",
     "{\"label\":\"ID\",\"value\":\"104\",\"unit\":\"A\"},",
@@ -576,18 +481,25 @@ function buildSemiconductorAltPrompt(originalPart) {
     "{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],",
     "\"package\":\"TO-220\",",
     "\"whyAlternative\":\"Exceeds all original specs. In stock on Digi-Key.\",",
-    "\"differences\":\"slightly higher Rds but pin compatible\"}],",
-    "\"importantNote\":\"Verify gate drive and thermal requirements before use\"}",
+    "\"differences\":\"higher voltage and current ratings\"}],",
+    "\"importantNote\":\"Verify compatibility before use\"}",
   ].join("\n");
 }
 
 // =============================================
+// HEALTH CHECK
+// =============================================
+app.get("/api/health", function(req, res) {
+  res.json({ status: "ok", service: "PartTensor", time: new Date().toISOString() });
+});
+
+// =============================================
 // ROUTE 1 — AI Search
+// Stock pre-fetched before sending to frontend
 // =============================================
 app.post("/api/search", async function(req, res) {
   try {
-    var query = req.body.query;
-    var mode = req.body.mode;
+    var query = req.body.query, mode = req.body.mode;
     if (!query) return res.status(400).json({ error: "Query is required" });
 
     var cacheKey = (mode || "search") + ":" + query.toLowerCase().trim();
@@ -599,52 +511,20 @@ app.post("/api/search", async function(req, res) {
     var responseData;
 
     if (mode === "search" && isAlternativeQuery(query)) {
-      // =========================================
-      // ALTERNATIVE FINDER — SMART ROUTING
-      // =========================================
+      // ALTERNATIVE FINDER
       var originalPn = extractPartNumber(query);
-      var originalPart = null;
-
-      if (originalPn) {
-        originalPart = await fetchOriginalPart(originalPn);
-      }
+      var originalPart = originalPn ? await fetchOriginalPart(originalPn) : null;
 
       if (!originalPart) {
-        // Part not found on DigiKey — fall back to general search
-        console.log("Part not found — falling back to search");
         var fb = await callAI(SEARCH_PROMPT, query);
         if (fb.error) return res.status(503).json({ error: fb.error });
         responseData = fb.data;
-
+        if (responseData && responseData.results) {
+          responseData.results = validateSpecs(responseData.results, parseSpecsFromQuery(query));
+          responseData.results = await verifyAndEnrichParts(responseData.results);
+        }
       } else if (originalPart.componentType === "passive_connector") {
-        // ---- PASSIVE / CONNECTOR PATH ----
-        // Do NOT ask AI to guess part numbers
-        // Return DigiKey search links instead
-        console.log("Passive/connector detected — returning DigiKey search links");
-
-        // Build smart DigiKey search URL using original part specs
-        // Use first 4-5 meaningful words from description as search keyword
-var descWords = (originalPart.description || "")
-  .replace(/[^a-zA-Z0-9\s]/g, " ")
-  .split(/\s+/)
-  .filter(function(w) { return w.length > 2; })
-  .slice(0, 5)
-  .join(" ");
-
-var searchKeyword = descWords || originalPart.categoryName;
-
-// DigiKey correct search URL format
-var dkSearchUrl = "https://www.digikey.com/en/products/result?keywords=" +
-  encodeURIComponent(searchKeyword) + "&stock=1";
-
-// Mouser correct search URL format  
-var mouserSearchUrl = "https://www.mouser.com/Search/Refine?Keyword=" +
-  encodeURIComponent(searchKeyword) + "&inStock=1";
-
-// Octopart correct URL
-var octopartUrl = "https://octopart.com/search?q=" +
-  encodeURIComponent(searchKeyword) + "&in_stock=1";
-
+        // PASSIVE/CONNECTOR — return search links
         responseData = {
           mode: "passive_connector_alt",
           originalPart: originalPart.mpn,
@@ -653,83 +533,74 @@ var octopartUrl = "https://octopart.com/search?q=" +
           originalSpecs: originalPart.specsText.substring(0, 300),
           componentType: originalPart.componentType,
           categoryName: originalPart.categoryName,
-          message: "For connectors and passives, parametric search gives the most accurate results. Use these links to find in-stock alternatives with matching specs:",
+          message: "For connectors and passives, parametric search gives the most accurate results.",
           searchLinks: [
-                {
-                  name: "🔵 Search Digi-Key",
-                  url: dkSearchUrl,
-                  description: "Filter by specs in Digi-Key's parametric search",
-                },
-                {
-                  name: "🟣 Search Mouser",
-                  url: mouserSearchUrl,
-                  description: "Find in-stock alternatives on Mouser",
-                },
-                {
-                  name: "🔍 Search Octopart",
-                  url: octopartUrl,
-                  description: "Compare across all distributors",
-                },
-           ],
+            { name: "🔵 Search Digi-Key", url: originalPart.dkSearchUrl, description: "Filter by specs in Digi-Key parametric search" },
+            { name: "🟣 Search Mouser", url: originalPart.mouserSearchUrl, description: "Find in-stock alternatives on Mouser" },
+            { name: "🔍 Search Octopart", url: originalPart.octopartUrl, description: "Compare across all distributors" },
+          ],
           tips: [
             "Filter by: " + originalPart.categoryName,
-            "Key specs to match: " + originalPart.specsText.substring(0, 150),
+            "Match specs: " + originalPart.specsText.substring(0, 150),
             "Exclude manufacturer: " + originalPart.manufacturer + " (likely same shortage)",
           ],
         };
-
       } else {
-        // ---- SEMICONDUCTOR PATH ----
-        // AI with real specs from DigiKey
-        console.log("Semiconductor detected — using AI with real specs");
+        // SEMICONDUCTOR — AI with real specs
         var altPrompt = buildSemiconductorAltPrompt(originalPart);
         var altResult = await callAI(altPrompt, query);
-
-        if (altResult.error) {
-          return res.status(503).json({ error: altResult.error });
-        }
-
-        // Validate specs using real DigiKey data
+        if (altResult.error) return res.status(503).json({ error: altResult.error });
         if (altResult.data && altResult.data.alternatives) {
-          altResult.data.alternatives = validateSpecs(
-            altResult.data.alternatives,
-            originalPart.specs
-          );
-          // Verify parts exist on DigiKey
-          console.log("\nVerifying alternatives on DigiKey...");
+          altResult.data.alternatives = validateSpecs(altResult.data.alternatives, originalPart.specs);
           altResult.data.alternatives = await verifyAndEnrichParts(altResult.data.alternatives);
         }
-
         responseData = altResult.data;
       }
 
     } else if (mode === "search") {
-      // =========================================
-      // COMPONENT SEARCH
-      // =========================================
+      // COMPONENT SEARCH — 4 results
       var searchResult = await callAI(SEARCH_PROMPT, query);
       if (searchResult.error) {
         if (searchResult.error === "parse_failed") return res.status(500).json({ error: "Could not parse AI response. Please try again." });
         return res.status(503).json({ error: searchResult.error });
       }
       if (searchResult.data && searchResult.data.results) {
-        var querySpecs = parseSpecsFromQuery(query);
-        searchResult.data.results = validateSpecs(searchResult.data.results, querySpecs);
-        console.log("\nVerifying on DigiKey...");
+        searchResult.data.results = validateSpecs(searchResult.data.results, parseSpecsFromQuery(query));
         searchResult.data.results = await verifyAndEnrichParts(searchResult.data.results);
       }
       responseData = searchResult.data;
 
     } else {
-      // =========================================
       // BOM GENERATOR
-      // =========================================
       var bomResult = await callAI(BOM_PROMPT, query);
       if (bomResult.error) {
         if (bomResult.error === "parse_failed") return res.status(500).json({ error: "Could not parse AI response. Please try again." });
         return res.status(503).json({ error: bomResult.error });
       }
       responseData = bomResult.data;
+    }
+
+    // PRE-FETCH STOCK before sending to frontend
+    if (responseData && responseData.mode !== "passive_connector_alt") {
+      var partsToCheck = [];
+      if (responseData.results) partsToCheck = responseData.results.map(function(p) { return p.partNumber; });
+      else if (responseData.alternatives) partsToCheck = responseData.alternatives.map(function(p) { return p.partNumber; });
+      else if (responseData.bomItems) partsToCheck = responseData.bomItems.map(function(p) { return p.partNumber; });
+
+      if (partsToCheck.length > 0) {
+        console.log("\nPre-fetching stock for", partsToCheck.length, "parts...");
+        var stockData = await prefetchStock(partsToCheck);
+        responseData.stockData = stockData;
+
+        // Sort by stock
+        var sortFn = function(a, b) {
+          return (stockData[b.partNumber] ? stockData[b.partNumber].totalStock : 0) -
+                 (stockData[a.partNumber] ? stockData[a.partNumber].totalStock : 0);
+        };
+        if (responseData.results) responseData.results = responseData.results.slice().sort(sortFn);
+        if (responseData.alternatives) responseData.alternatives = responseData.alternatives.slice().sort(sortFn);
+        if (responseData.bomItems) responseData.bomItems = responseData.bomItems.slice().sort(sortFn);
+      }
     }
 
     setCache(aiCache, cacheKey, responseData, AI_TTL);
@@ -742,52 +613,14 @@ var octopartUrl = "https://octopart.com/search?q=" +
 });
 
 // =============================================
-// ROUTE 2 — Stock from Digi-Key + Mouser
+// ROUTE 2 — Stock (kept for direct calls)
 // =============================================
 app.post("/api/stock", async function(req, res) {
   try {
     var partNumbers = req.body.partNumbers;
     if (!partNumbers || !Array.isArray(partNumbers)) return res.status(400).json({ error: "partNumbers array is required" });
-
     console.log("\nStock lookup:", partNumbers.join(", "));
-    var stockData = {};
-
-    for (var pi = 0; pi < partNumbers.length; pi++) {
-      var mpn = partNumbers[pi];
-      if (!mpn) continue;
-      var cached = getCached(stockCache, mpn);
-      if (cached) { stockData[mpn] = cached; continue; }
-
-      var results = await Promise.all([lookupDigikey(mpn), lookupMouser(mpn)]);
-      var dk = results[0];
-      var mouser = results[1];
-
-      console.log(" ", mpn, "-> DK:", dk ? dk.stock : "N/A", "| MO:", mouser ? mouser.stock : "N/A");
-
-      var distributors = [];
-      if (dk && dk.stock > 0) distributors.push({ name: "Digi-Key", stock: dk.stock, price: dk.price, url: dk.url });
-      if (mouser && mouser.stock > 0) distributors.push({ name: "Mouser", stock: mouser.stock, price: mouser.price, url: mouser.url });
-      distributors.sort(function(a, b) { return b.stock - a.stock; });
-
-      var totalStock = (dk ? dk.stock : 0) + (mouser ? mouser.stock : 0);
-      var bestPrice = null, bestPriceSource = null;
-      if (dk && dk.price) { bestPrice = dk.price; bestPriceSource = "Digi-Key"; }
-      if (mouser && mouser.price) {
-        var mv = parseFloat((mouser.price || "999").replace(/[^0-9.]/g, "")) || 999;
-        var cv = parseFloat((bestPrice || "999").replace(/[^0-9.]/g, "")) || 999;
-        if (mv < cv) { bestPrice = mouser.price; bestPriceSource = "Mouser"; }
-      }
-
-      var stockResult = {
-        found: totalStock > 0, totalStock: totalStock,
-        bestPrice: bestPrice, bestPriceSource: bestPriceSource,
-        distributors: distributors, digikey: dk, mouser: mouser,
-        octopartUrl: "https://octopart.com/search?q=" + encodeURIComponent(mpn),
-      };
-      setCache(stockCache, mpn, stockResult, STOCK_TTL);
-      stockData[mpn] = stockResult;
-    }
-
+    var stockData = await prefetchStock(partNumbers);
     res.json(stockData);
   } catch (err) {
     console.error("Stock route error:", err.message);
@@ -795,17 +628,13 @@ app.post("/api/stock", async function(req, res) {
   }
 });
 
-app.get("/api/health", function(req, res) {
-  res.json({ status: "ok", service: "PartTensor", time: new Date().toISOString() });
-});
-
-
 // =============================================
 // START SERVER
 // =============================================
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
-  console.log("\nSilicore v4 running on http://localhost:" + PORT);
-  console.log("  POST /api/search — Smart routing: AI for semiconductors, DigiKey links for passives/connectors");
-  console.log("  POST /api/stock  — Digi-Key + Mouser live stock\n");
+  console.log("\nPartTensor backend running on http://localhost:" + PORT);
+  console.log("  GET  /api/health — health check");
+  console.log("  POST /api/search — AI + stock pre-fetched in one call");
+  console.log("  POST /api/stock  — direct stock lookup\n");
 });
