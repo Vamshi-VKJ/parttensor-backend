@@ -113,8 +113,46 @@ function detectComponentType(query) {
   if (q.includes("temperature sensor") || q.includes("temp sensor")) return "temp_sensor";
   return null;
 }
+function buildParametricFilters(categoryKey, specs) {
+  var filters = [];
+  if (!specs || Object.keys(specs).length === 0) return filters;
 
-async function searchByCategory(categoryKey, limit) {
+  // MOSFET parametric filter IDs (real DigiKey parameter IDs)
+  if (categoryKey === "mosfet_n" || categoryKey === "mosfet_p" || categoryKey === "igbt") {
+    if (specs.voltage) {
+      // Parameter 96 = Vds voltage, send minimum value
+      filters.push({ ParameterId: 96, FilterValues: [String(specs.voltage) + " V Min"] });
+    }
+    if (specs.current) {
+      // Parameter 97 = Continuous drain current
+      filters.push({ ParameterId: 97, FilterValues: [String(specs.current) + " A Min"] });
+    }
+  }
+
+  if (categoryKey === "ldo") {
+    if (specs.current) {
+      filters.push({ ParameterId: 2054, FilterValues: [String(specs.current) + " A Min"] });
+    }
+  }
+
+  if (categoryKey === "cap_ceramic" || categoryKey === "cap_electrolytic") {
+    if (specs.voltage) {
+      filters.push({ ParameterId: 2050, FilterValues: [String(specs.voltage) + " V Min"] });
+    }
+  }
+
+  if (categoryKey === "inductor") {
+    if (specs.current) {
+      filters.push({ ParameterId: 2088, FilterValues: [String(specs.current) + " A Min"] });
+    }
+  }
+
+  return filters;
+}
+
+
+
+async function searchByCategory(categoryKey, specs, limit) {
   try {
     var fetch = (await import("node-fetch")).default;
     var token = await getDigikeyToken();
@@ -126,13 +164,14 @@ async function searchByCategory(categoryKey, limit) {
      Limit: limit || 50,
      Offset: 0,
      FilterOptionsRequest: {
-       InStock: true,
-       MarketplaceProducts: false,
-    },
-
+     InStock: true,
+     MarketplaceProducts: false,
+     ParametricFilters: buildParametricFilters(categoryKey, specs),
+      },
      CategoryFilter: { CategoryId: cat.id },
-    
+     SortOptions: { Field: "QuantityAvailable", SortOrder: "Descending" },
      };
+
 
     console.log("DigiKey category search:", cat.name, "id=" + cat.id);
     var res = await fetch("https://api.digikey.com/products/v4/search/keyword", {
@@ -581,7 +620,7 @@ app.post("/api/chat", async function(req, res) {
         return res.json({ text: "For " + pn + " (" + originalPart.categoryName + "), use parametric search for the most accurate results.", mode: "passive_connector_alt", originalPart: pn, originalManufacturer: originalPart.manufacturer, originalDescription: originalPart.description, categoryName: originalPart.categoryName, searchLinks: [{ name: "Digi-Key Search", url: originalPart.dkSearchUrl, description: "Filter by specs" }, { name: "Mouser Search", url: originalPart.mouserSearchUrl, description: "In-stock alternatives" }, { name: "Octopart", url: originalPart.octopartUrl, description: "All distributors" }], tips: ["Category: " + originalPart.categoryName, originalPart.specsText.substring(0, 150)], intent: intent });
       }
       var altCompType = detectComponentType(originalPart.description + " " + originalPart.categoryName);
-      var altDKProducts = altCompType ? await searchByCategory(altCompType, 50) : null;
+      var altDKProducts = altCompType ? await searchByCategory(altCompType, originalPart.specs, 50) : null;
       if (altDKProducts && altDKProducts.length > 0) {
         var altConverted = altDKProducts.map(function(p) { return convertProduct(p, altCompType); }).filter(function(p) { return p.partNumber.toUpperCase() !== pn.toUpperCase() && p.dkStock > 0; });
         altConverted = filterBySpecs(altConverted, originalPart.specs, altCompType);
@@ -645,7 +684,7 @@ app.post("/api/chat", async function(req, res) {
       return res.json({ text: unkResult.text || "I could not identify the component type. Please specify: MOSFET, op-amp, capacitor, inductor, LDO, diode, etc.", intent: intent, mode: "text" });
     }
 
-    var dkProducts = await searchByCategory(componentType, 50);
+    var dkProducts = await searchByCategory(componentType, requiredSpecs, 50);
     if (!dkProducts || dkProducts.length === 0) {
       return res.json({ text: "DigiKey returned no results for " + (DK_CATEGORIES[componentType] && DK_CATEGORIES[componentType].name) + ". Try relaxing the requirements.", intent: intent, mode: "text" });
     }
@@ -746,7 +785,7 @@ app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async fu
           if (!partInfo.isPassive) {
             var ct = detectComponentType(partInfo.description + " " + partInfo.categoryName);
             if (ct) {
-              var altProds = await searchByCategory(ct, 20);
+              var altProds = await searchByCategory(ct, partInfo.specs, 20);
               if (altProds && altProds.length > 0) {
                 var altConv = altProds.map(function(p) { return convertProduct(p, ct); }).filter(function(p) { return p.partNumber.toUpperCase() !== pn.toUpperCase() && p.dkStock > 0; });
                 altConv = filterBySpecs(altConv, partInfo.specs, ct).sort(function(a, b) { return scoreCloseness(a._specs, partInfo.specs, ct) - scoreCloseness(b._specs, partInfo.specs, ct); }).slice(0, 3);
