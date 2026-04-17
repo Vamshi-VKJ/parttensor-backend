@@ -265,6 +265,12 @@ async function searchByCategory(categoryKey, specs, limit) {
     var data = await res.json();
     var products = data.Products || [];
     console.log("DigiKey returned", products.length, "products for", cat.name);
+    if (data.AppliedParametricFiltersDto) console.log("Applied filters:", JSON.stringify(data.AppliedParametricFiltersDto).substring(0, 300));
+    if (data.FilterOptions && data.FilterOptions.ParametricFilters) {
+  var vdsFilter = data.FilterOptions.ParametricFilters.find(function(f) { return f.ParameterId === 2068; });
+  if (vdsFilter) console.log("Available Vds values sample:", JSON.stringify((vdsFilter.FilterValues || []).slice(0, 5)));
+    }
+
     console.log("DigiKey raw response keys:", Object.keys(data));
     if (products.length === 0) console.log("DigiKey full response:", JSON.stringify(data).substring(0, 500));
     return products;
