@@ -807,14 +807,16 @@ app.post("/api/chat", async function(req, res) {
     return !status.includes("obsolete") && !status.includes("not recommended") && !status.includes("nrnd") && p.dkStock > 0;
     });
 
-    var filteredParts = filterBySpecs(allParts, requiredSpecs, componentType);
-    console.log("After spec filter:", filteredParts.length, "of", allParts.length, "parts remain");
-    if (allParts.length > 0) {
-      console.log("Sample part specs:", JSON.stringify(allParts[0]._specs));
-      console.log("Sample part PN:", allParts[0].partNumber);
-      console.log("Required specs:", JSON.stringify(requiredSpecs));
-        }
-    if (filteredParts.length < 3) { console.log("Too few after filter, relaxing"); filteredParts = allParts; }
+   var filteredParts = allParts.filter(function(p) {
+  var ps = p._specs || {};
+  if (!ps.voltage && !ps.current) return true;
+  if (requiredSpecs.voltage && ps.voltage && ps.voltage < requiredSpecs.voltage * 0.95) return false;
+  if (requiredSpecs.current && ps.current && ps.current < requiredSpecs.current * 0.95) return false;
+  return true;
+  });
+  console.log("After spec filter:", filteredParts.length, "of", allParts.length, "parts remain");
+  if (filteredParts.length < 2) filteredParts = allParts;
+
 
     filteredParts = filteredParts.sort(function(a, b) {
       var aIn = a.dkStock > 0 ? 1 : 0;
@@ -829,35 +831,28 @@ app.post("/api/chat", async function(req, res) {
     var topParts = filteredParts.slice(0, 4);
 console.log("Top parts:", topParts.map(function(p) { return p.partNumber + "(" + p.dkStock + ")"; }).join(", "));
 
-// Fetch full details for each part to get real specs
+// Fetch full details in parallel for top parts
+var detailPromises = topParts.map(function(p) { return fetchProductDetails(p.partNumber); });
+var detailResults = await Promise.all(detailPromises);
 for (var di = 0; di < topParts.length; di++) {
-  var fullProduct = await fetchProductDetails(topParts[di].partNumber);
+  var fullProduct = detailResults[di];
   if (fullProduct && fullProduct.Parameters && fullProduct.Parameters.length > 0) {
     var realSpecs = extractSpecsFromParameters(fullProduct.Parameters);
     topParts[di]._specs = realSpecs;
     topParts[di].keySpecs = buildKeySpecs(fullProduct.Parameters, realSpecs, componentType, fullProduct);
-    console.log("  Full specs for", topParts[di].partNumber, ":", JSON.stringify(realSpecs));
-     if (fullProduct && fullProduct.Parameters) {
-     console.log("  Raw params:", JSON.stringify(fullProduct.Parameters.slice(0, 10)));
-}
-
+    console.log("  Specs", topParts[di].partNumber, "V:", realSpecs.voltage, "A:", realSpecs.current);
   }
 }
-
-// Re-filter with real specs now that we have them
+// Re-filter with real specs
 topParts = topParts.filter(function(p) {
   var ps = p._specs || {};
-  if (requiredSpecs.voltage && ps.voltage && ps.voltage < requiredSpecs.voltage * 0.95) {
-    console.log("  REJECTED", p.partNumber, "voltage", ps.voltage, "< required", requiredSpecs.voltage);
-    return false;
-  }
-  if (requiredSpecs.current && ps.current && ps.current < requiredSpecs.current * 0.95) {
-    console.log("  REJECTED", p.partNumber, "current", ps.current, "< required", requiredSpecs.current);
-    return false;
-  }
+  if (requiredSpecs.voltage && ps.voltage && ps.voltage < requiredSpecs.voltage * 0.95) { console.log("  REJECTED", p.partNumber, "V=" + ps.voltage); return false; }
+  if (requiredSpecs.current && ps.current && ps.current < requiredSpecs.current * 0.95) { console.log("  REJECTED", p.partNumber, "A=" + ps.current); return false; }
   return true;
 });
-console.log("After detail re-filter:", topParts.length, "parts remain");
+console.log("After re-filter:", topParts.length, "parts remain");
+// If too few remain after filter, take what we have
+if (topParts.length === 0) topParts = filteredParts.slice(0, 4);
 
     var stockDataMap = {};
     for (var ti = 0; ti < topParts.length; ti++) {
