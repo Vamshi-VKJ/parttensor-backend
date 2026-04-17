@@ -870,8 +870,41 @@ app.post("/api/chat", async function(req, res) {
       return b.dkStock - a.dkStock;
     });
 
-    var topParts = filteredParts.slice(0, 4);
+    // Fetch full details for top 10 candidates to get real specs
+var candidates = filteredParts.slice(0, 10);
+console.log("Fetching details for", candidates.length, "candidates...");
+var detailPromises = candidates.map(function(p) { return fetchProductDetails(p.partNumber); });
+var detailResults = await Promise.all(detailPromises);
+
+for (var di = 0; di < candidates.length; di++) {
+  var fp = detailResults[di];
+  if (fp && fp.Parameters && fp.Parameters.length > 0) {
+    var rs = extractSpecsFromParameters(fp.Parameters);
+    candidates[di]._specs = rs;
+    candidates[di].keySpecs = buildKeySpecs(fp.Parameters, rs, componentType, fp);
+    console.log("  " + candidates[di].partNumber + " Vds=" + rs.voltage + "V Id=" + rs.current + "A");
+  }
+}
+
+// Now filter with real specs
+var topParts = candidates.filter(function(p) {
+  var ps = p._specs || {};
+  if (!ps.voltage && !ps.current) return true;
+  if (requiredSpecs.voltage && ps.voltage && ps.voltage < requiredSpecs.voltage * 0.95) {
+    console.log("  REJECTED " + p.partNumber + " Vds=" + ps.voltage + " < " + requiredSpecs.voltage);
+    return false;
+  }
+  if (requiredSpecs.current && ps.current && ps.current < requiredSpecs.current * 0.95) {
+    console.log("  REJECTED " + p.partNumber + " Id=" + ps.current + " < " + requiredSpecs.current);
+    return false;
+  }
+  return true;
+}).slice(0, 4);
+
+console.log("After real spec filter:", topParts.length, "parts remain");
+if (topParts.length === 0) topParts = candidates.slice(0, 4);
 console.log("Top parts:", topParts.map(function(p) { return p.partNumber + "(" + p.dkStock + ")"; }).join(", "));
+
 
 
     var stockDataMap = {};
