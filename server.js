@@ -125,9 +125,13 @@ async function searchByCategory(categoryKey, limit) {
      Keywords: cat.name,
      Limit: limit || 50,
      Offset: 0,
-     FilterOptionsRequest: { InStock: true },
+     FilterOptionsRequest: {
+       InStock: true,
+       MarketplaceProducts: false,
+    },
+
      CategoryFilter: { CategoryId: cat.id },
-     SortOptions: { Field: "QuantityAvailable", SortOrder: "Descending" },
+    
      };
 
     console.log("DigiKey category search:", cat.name, "id=" + cat.id);
@@ -646,7 +650,11 @@ app.post("/api/chat", async function(req, res) {
       return res.json({ text: "DigiKey returned no results for " + (DK_CATEGORIES[componentType] && DK_CATEGORIES[componentType].name) + ". Try relaxing the requirements.", intent: intent, mode: "text" });
     }
 
-    var allParts = dkProducts.map(function(p) { return convertProduct(p, componentType); });
+    var allParts = dkProducts.map(function(p) { return convertProduct(p, componentType); }).filter(function(p) {
+    var status = (p.description || "").toLowerCase();
+    return !status.includes("obsolete") && !status.includes("not recommended") && !status.includes("nrnd") && p.dkStock > 0;
+    });
+
     var filteredParts = filterBySpecs(allParts, requiredSpecs, componentType);
     console.log("After spec filter:", filteredParts.length, "of", allParts.length, "parts remain");
     if (filteredParts.length < 3) { console.log("Too few after filter, relaxing"); filteredParts = allParts; }
