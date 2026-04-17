@@ -831,35 +831,15 @@ app.post("/api/chat", async function(req, res) {
     var topParts = filteredParts.slice(0, 4);
 console.log("Top parts:", topParts.map(function(p) { return p.partNumber + "(" + p.dkStock + ")"; }).join(", "));
 
-// Fetch full details in parallel for top parts
-var detailPromises = topParts.map(function(p) { return fetchProductDetails(p.partNumber); });
-var detailResults = await Promise.all(detailPromises);
-for (var di = 0; di < topParts.length; di++) {
-  var fullProduct = detailResults[di];
-  if (fullProduct && fullProduct.Parameters && fullProduct.Parameters.length > 0) {
-    var realSpecs = extractSpecsFromParameters(fullProduct.Parameters);
-    topParts[di]._specs = realSpecs;
-    topParts[di].keySpecs = buildKeySpecs(fullProduct.Parameters, realSpecs, componentType, fullProduct);
-    console.log("  Specs", topParts[di].partNumber, "V:", realSpecs.voltage, "A:", realSpecs.current);
-  }
-}
-// Re-filter with real specs
-topParts = topParts.filter(function(p) {
-  var ps = p._specs || {};
-  if (requiredSpecs.voltage && ps.voltage && ps.voltage < requiredSpecs.voltage * 0.95) { console.log("  REJECTED", p.partNumber, "V=" + ps.voltage); return false; }
-  if (requiredSpecs.current && ps.current && ps.current < requiredSpecs.current * 0.95) { console.log("  REJECTED", p.partNumber, "A=" + ps.current); return false; }
-  return true;
-});
-console.log("After re-filter:", topParts.length, "parts remain");
-// If too few remain after filter, take what we have
-if (topParts.length === 0) topParts = filteredParts.slice(0, 4);
 
     var stockDataMap = {};
-    for (var ti = 0; ti < topParts.length; ti++) {
-      var mpn = topParts[ti].partNumber;
-      var cached = getCached(stockCache, mpn);
-      if (cached) { stockDataMap[mpn] = cached; continue; }
-      var mouser2 = await lookupMouser(mpn);
+      var mouserPromises = topParts.map(function(p) { return lookupMouser(p.partNumber); });
+   var mouserResults = await Promise.all(mouserPromises);
+  for (var ti = 0; ti < topParts.length; ti++) {
+  var mpn = topParts[ti].partNumber;
+  var cached = getCached(stockCache, mpn);
+  if (cached) { stockDataMap[mpn] = cached; continue; }
+  var mouser2 = mouserResults[ti];
       var total2 = topParts[ti].dkStock + (mouser2 ? mouser2.stock : 0);
       var bp2 = topParts[ti].dkPrice; var bps2 = "Digi-Key";
       if (mouser2 && mouser2.price) { var mv2 = parseFloat((mouser2.price || "999").replace(/[^0-9.]/g, "")) || 999; var cv2 = parseFloat((bp2 || "999").replace(/[^0-9.]/g, "")) || 999; if (mv2 < cv2) { bp2 = mouser2.price; bps2 = "Mouser"; } }
