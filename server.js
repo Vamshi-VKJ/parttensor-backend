@@ -117,38 +117,109 @@ function buildParametricFilters(categoryKey, specs) {
   var filters = [];
   if (!specs || Object.keys(specs).length === 0) return filters;
 
-  // MOSFET parametric filter IDs (real DigiKey parameter IDs)
-  if (categoryKey === "mosfet_n" || categoryKey === "mosfet_p" || categoryKey === "igbt") {
-    if (specs.voltage) {
-      // Parameter 96 = Vds voltage, send minimum value
-      filters.push({ ParameterId: 96, FilterValues: [String(specs.voltage) + " V Min"] });
-    }
-    if (specs.current) {
-      // Parameter 97 = Continuous drain current
-      filters.push({ ParameterId: 97, FilterValues: [String(specs.current) + " A Min"] });
+  // Real DigiKey ParameterIds from API responses
+  // Format: { parameterId, minValue } means "only return parts where param >= minValue"
+  // Format: { parameterId, exactValue } means "only return parts where param == exactValue"
+
+  var PARAM_MAP = {
+    // MOSFETs (category 278, 277)
+    mosfet_n: [
+      { specKey: "voltage",  parameterId: 2068 }, // Drain to Source Voltage (Vdss)
+      { specKey: "current",  parameterId: 608  }, // Current - Continuous Drain (Id) @ 25C
+    ],
+    mosfet_p: [
+      { specKey: "voltage",  parameterId: 2068 },
+      { specKey: "current",  parameterId: 608  },
+    ],
+    // IGBT (category 280)
+    igbt: [
+      { specKey: "voltage",  parameterId: 2068 }, // Collector Emitter Voltage
+      { specKey: "current",  parameterId: 608  }, // Collector Current
+    ],
+    // BJT (category 281, 282)
+    bjt_npn: [
+      { specKey: "voltage",  parameterId: 2068 }, // Vce Breakdown
+      { specKey: "current",  parameterId: 608  }, // Collector Current
+    ],
+    bjt_pnp: [
+      { specKey: "voltage",  parameterId: 2068 },
+      { specKey: "current",  parameterId: 608  },
+    ],
+    // Diodes (category 286, 287)
+    diode_rectifier: [
+      { specKey: "voltage",  parameterId: 2068 }, // Peak Reverse Voltage
+      { specKey: "current",  parameterId: 608  }, // Average Rectified Current
+    ],
+    diode_schottky: [
+      { specKey: "voltage",  parameterId: 2068 },
+      { specKey: "current",  parameterId: 608  },
+    ],
+    diode_zener: [
+      { specKey: "voltage",  parameterId: 2068 }, // Zener voltage
+    ],
+    // Op-amp (category 696)
+    opamp: [
+      { specKey: "gbwMHz",   parameterId: 618  }, // Gain Bandwidth Product
+    ],
+    // LDO (category 701)
+    ldo: [
+      { specKey: "current",  parameterId: 2054 }, // Output Current
+      { specKey: "outputV",  parameterId: 2049 }, // Output Voltage
+    ],
+    // DC-DC (category 706)
+    dcdc_buck: [
+      { specKey: "voltage",  parameterId: 2068 }, // Input voltage max
+      { specKey: "current",  parameterId: 608  }, // Output current
+    ],
+    // Capacitors (category 399, 406)
+    cap_ceramic: [
+      { specKey: "voltage",       parameterId: 2050 }, // Voltage Rated
+      { specKey: "capacitanceUF", parameterId: 2049 }, // Capacitance
+    ],
+    cap_electrolytic: [
+      { specKey: "voltage",       parameterId: 2050 },
+      { specKey: "capacitanceUF", parameterId: 2049 },
+    ],
+    cap_tantalum: [
+      { specKey: "voltage",       parameterId: 2050 },
+      { specKey: "capacitanceUF", parameterId: 2049 },
+    ],
+    cap_film: [
+      { specKey: "voltage",       parameterId: 2050 },
+      { specKey: "capacitanceUF", parameterId: 2049 },
+    ],
+    // Inductors (category 389)
+    inductor: [
+      { specKey: "inductanceUH",  parameterId: 2087 }, // Inductance
+      { specKey: "current",       parameterId: 2088 }, // Current Rating
+    ],
+    // Resistors (category 411)
+    resistor_smd: [
+      { specKey: "power",         parameterId: 2097 }, // Power rating
+    ],
+    // Current sensor (category 730)
+    current_sensor: [
+      { specKey: "current",       parameterId: 608  },
+    ],
+  };
+
+  var mappings = PARAM_MAP[categoryKey] || [];
+
+  for (var i = 0; i < mappings.length; i++) {
+    var mapping = mappings[i];
+    var specValue = specs[mapping.specKey];
+    if (specValue !== undefined && specValue !== null) {
+      filters.push({
+        ParameterId: mapping.parameterId,
+        FilterValues: [String(specValue)],
+      });
     }
   }
 
-  if (categoryKey === "ldo") {
-    if (specs.current) {
-      filters.push({ ParameterId: 2054, FilterValues: [String(specs.current) + " A Min"] });
-    }
-  }
-
-  if (categoryKey === "cap_ceramic" || categoryKey === "cap_electrolytic") {
-    if (specs.voltage) {
-      filters.push({ ParameterId: 2050, FilterValues: [String(specs.voltage) + " V Min"] });
-    }
-  }
-
-  if (categoryKey === "inductor") {
-    if (specs.current) {
-      filters.push({ ParameterId: 2088, FilterValues: [String(specs.current) + " A Min"] });
-    }
-  }
-
+  console.log("Parametric filters for", categoryKey, ":", JSON.stringify(filters));
   return filters;
 }
+
 
 
 
@@ -292,50 +363,76 @@ function extractSpecsFromParameters(parameters) {
   var specs = {};
   if (!parameters || !Array.isArray(parameters)) return specs;
   for (var i = 0; i < parameters.length; i++) {
-    var name = (parameters[i].Parameter || "").toLowerCase();
-    var raw = (parameters[i].Value || "").toLowerCase();
-    var num = parseFloat(raw.replace(/[^0-9.]/g, ""));
-    if ((name.includes("drain to source") || name.includes("vdss") || name.includes("vds")) && !isNaN(num)) specs.voltage = num;
-    else if ((name.includes("collector emitter breakdown") || name.includes("vce") || name.includes("vceo")) && !isNaN(num) && !specs.voltage) specs.voltage = num;
-    else if ((name.includes("voltage - peak reverse") || name.includes("vrrm")) && !isNaN(num) && !specs.voltage) specs.voltage = num;
-    else if ((name.includes("voltage rated") || name.includes("voltage - rated")) && !isNaN(num) && !specs.voltage) specs.voltage = num;
-    else if ((name.includes("voltage - input (max)") || name.includes("vin max")) && !isNaN(num) && !specs.vin) specs.vin = num;
-    else if ((name.includes("voltage - output") || name.includes("vout")) && !isNaN(num) && !specs.vout) specs.vout = parseFloat((parameters[i].Value || "").replace(/[^0-9.]/g, ""));
-    else if ((name.includes("continuous drain") || name.includes("id)") || name.includes("drain current")) && !isNaN(num)) specs.current = num;
-    else if ((name.includes("collector") && name.includes("current") && name.includes("max")) && !isNaN(num) && !specs.current) specs.current = num;
-    else if ((name.includes("current - output") || name.includes("iout") || name.includes("output current")) && !isNaN(num) && !specs.current) specs.current = num;
-    else if ((name.includes("current - average rectified") || name.includes("io)")) && !isNaN(num) && !specs.current) specs.current = num;
-    else if ((name.includes("current rating") || name.includes("irated")) && !isNaN(num) && !specs.current) specs.current = num;
-    else if ((name.includes("rds on") || name.includes("rds(on)")) && !isNaN(num)) {
-      if (raw.includes("mohm") || raw.includes("milliohm")) specs.rds = num;
-      else specs.rds = num * 1000;
+    var ptext = (parameters[i].ParameterText || parameters[i].Parameter || "").toLowerCase();
+    var vtext = (parameters[i].ValueText || parameters[i].Value || "").toLowerCase();
+    var num = parseFloat(vtext.replace(/[^0-9.]/g, ""));
+
+    if (ptext.includes("drain to source voltage") || ptext.includes("vdss")) {
+      if (!isNaN(num)) specs.voltage = num;
+    } else if (ptext.includes("continuous drain") || ptext.includes("id) @")) {
+      if (!isNaN(num)) {
+        if (vtext.includes("ma")) specs.current = num / 1000;
+        else specs.current = num;
+      }
+    } else if (ptext.includes("collector emitter") && ptext.includes("voltage")) {
+      if (!isNaN(num) && !specs.voltage) specs.voltage = num;
+    } else if (ptext.includes("collector") && ptext.includes("current")) {
+      if (!isNaN(num) && !specs.current) specs.current = num;
+    } else if (ptext.includes("rds on") || ptext.includes("rds(on)")) {
+      if (!isNaN(num)) specs.rds = vtext.includes("mohm") ? num : num * 1000;
+    } else if (ptext.includes("power dissipation") || ptext === "pd" || ptext === "ptot") {
+      if (!isNaN(num)) specs.power = num;
+    } else if (ptext.includes("voltage - peak reverse") || ptext.includes("vrrm")) {
+      if (!isNaN(num) && !specs.voltage) specs.voltage = num;
+    } else if (ptext.includes("average rectified") || ptext.includes("io)")) {
+      if (!isNaN(num) && !specs.current) specs.current = num;
+    } else if (ptext === "capacitance") {
+      if (!isNaN(num)) {
+        if (vtext.includes("uf")) specs.capacitance = num;
+        else if (vtext.includes("nf")) specs.capacitance = num / 1000;
+        else if (vtext.includes("pf")) specs.capacitance = num / 1000000;
+        else specs.capacitance = num;
+      }
+    } else if (ptext === "inductance") {
+      if (!isNaN(num)) {
+        if (vtext.includes("uh")) specs.inductance = num;
+        else if (vtext.includes("nh")) specs.inductance = num / 1000;
+        else if (vtext.includes("mh")) specs.inductance = num * 1000;
+        else specs.inductance = num;
+      }
+    } else if (ptext.includes("gain bandwidth") || ptext.includes("gbw") || ptext.includes("gbp")) {
+      if (!isNaN(num)) {
+        if (vtext.includes("mhz")) specs.gbw = num;
+        else if (vtext.includes("khz")) specs.gbw = num / 1000;
+        else specs.gbw = num;
+      }
+    } else if (ptext.includes("voltage - output") || ptext.includes("vout")) {
+      if (!isNaN(num) && !specs.vout) specs.vout = num;
+    } else if (ptext.includes("current - output") || ptext.includes("iout")) {
+      if (!isNaN(num) && !specs.current) {
+        if (vtext.includes("ma")) specs.current = num / 1000;
+        else specs.current = num;
+      }
+    } else if (ptext.includes("dropout")) {
+      if (!isNaN(num)) specs.dropout = vtext.includes("mv") ? num : num * 1000;
+    } else if (ptext.includes("voltage - input (max)") || ptext.includes("vin max")) {
+      if (!isNaN(num) && !specs.vin) specs.vin = num;
+    } else if (ptext.includes("voltage rated") || ptext.includes("voltage - rated")) {
+      if (!isNaN(num) && !specs.voltage) specs.voltage = num;
+    } else if (ptext.includes("current rating") || ptext.includes("irated")) {
+      if (!isNaN(num) && !specs.current) {
+        if (vtext.includes("ma")) specs.current = num / 1000;
+        else specs.current = num;
+      }
+    } else if (ptext.includes("dc resistance") || ptext.includes("dcr")) {
+      if (!isNaN(num)) specs.dcr = num;
+    } else if (ptext.includes("forward voltage") || ptext === "vf") {
+      if (!isNaN(num)) specs.vf = num;
     }
-    else if ((name.includes("dc resistance") || name.includes("dcr")) && !isNaN(num)) specs.dcr = num;
-    else if ((name.includes("power dissipation") || name.includes("pd") || name.includes("ptot")) && !isNaN(num)) specs.power = num;
-    else if (name === "capacitance" && !isNaN(num)) {
-      if (raw.includes("uf")) specs.capacitance = num;
-      else if (raw.includes("nf")) specs.capacitance = num / 1000;
-      else if (raw.includes("pf")) specs.capacitance = num / 1000000;
-      else specs.capacitance = num;
-    }
-    else if (name === "inductance" && !isNaN(num)) {
-      if (raw.includes("uh")) specs.inductance = num;
-      else if (raw.includes("nh")) specs.inductance = num / 1000;
-      else if (raw.includes("mh")) specs.inductance = num * 1000;
-      else specs.inductance = num;
-    }
-    else if ((name.includes("gain bandwidth") || name.includes("gbw") || name.includes("gbp")) && !isNaN(num)) {
-      if (raw.includes("mhz")) specs.gbw = num;
-      else if (raw.includes("khz")) specs.gbw = num / 1000;
-      else specs.gbw = num;
-    }
-    else if ((name.includes("dropout") || name.includes("vdo")) && !isNaN(num)) {
-      specs.dropout = raw.includes("mv") ? num : num * 1000;
-    }
-    else if ((name.includes("forward voltage") || name.includes("vf")) && !isNaN(num)) specs.vf = num;
   }
   return specs;
 }
+
 
 function buildKeySpecs(parameters, productSpecs, componentType, product) {
   var keySpecs = [];
