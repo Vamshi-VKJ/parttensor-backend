@@ -915,7 +915,7 @@ var topParts = candidates.filter(function(p) {
 }).slice(0, 4);
 
 console.log("After real spec filter:", topParts.length, "parts remain");
-if (topParts.length === 0) topParts = candidates.slice(0, 4);
+if (topParts.length === 0) topParts = filteredParts.slice(0, 4);
 console.log("Top parts:", topParts.map(function(p) { return p.partNumber + "(" + p.dkStock + ")"; }).join(", "));
 
 
