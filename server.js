@@ -887,6 +887,10 @@ for (var di = 0; di < candidates.length; di++) {
     candidates[di]._specs = rs;
     candidates[di].keySpecs = buildKeySpecs(fp.Parameters, rs, componentType, fp);
     console.log("  " + candidates[di].partNumber + " Vds=" + rs.voltage + "V Id=" + rs.current + "A");
+    if (!rs.voltage && fp.Parameters) {
+    console.log("  RAW PARAMS:", JSON.stringify(fp.Parameters.slice(0, 5)));
+}
+
   }
 }
 
