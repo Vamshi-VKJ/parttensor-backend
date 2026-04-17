@@ -384,7 +384,7 @@ else if ((name.includes("current rating") || name.includes("irated")) && !isNaN(
 // Resistance specs
 else if ((name.includes("rds on") || name.includes("rds(on)")) && !isNaN(num)) {
   // Normalize to mOhm
-  if (raw.includes("mohm") || raw.includes("m\u03a9") || raw.includes("milliohm")) specs.rds = num;
+  if (raw.includes("mohm") || raw.includes("mmOhm") || raw.includes("milliohm")) specs.rds = num;
   else if (raw.includes("kohm")) specs.rds = num * 1000000;
   else specs.rds = num * 1000; // assume Ohm -> convert to mOhm
 }
@@ -395,7 +395,7 @@ else if ((name.includes("power dissipation") || name.includes("pd") || name.incl
 
 // Capacitance
 else if (name === "capacitance" && !isNaN(num)) {
-  if (raw.includes("uf") || raw.includes("\u00b5f")) specs.capacitance = num;
+  if (raw.includes("uf") || raw.includes("uf")) specs.capacitance = num;
   else if (raw.includes("nf")) specs.capacitance = num / 1000;
   else if (raw.includes("pf")) specs.capacitance = num / 1000000;
   else specs.capacitance = num;
@@ -403,7 +403,7 @@ else if (name === "capacitance" && !isNaN(num)) {
 
 // Inductance
 else if (name === "inductance" && !isNaN(num)) {
-  if (raw.includes("uh") || raw.includes("\u00b5h")) specs.inductance = num;
+  if (raw.includes("uh") || raw.includes("uh")) specs.inductance = num;
   else if (raw.includes("nh")) specs.inductance = num / 1000;
   else if (raw.includes("mh")) specs.inductance = num * 1000;
   else specs.inductance = num;
@@ -449,7 +449,7 @@ var pkg = (product && product.PackageType) || “”;
 if (componentType === “mosfet_n” || componentType === “mosfet_p” || componentType === “igbt”) {
 if (productSpecs.voltage) keySpecs.push({ label: “VDS”, value: String(productSpecs.voltage), unit: “V” });
 if (productSpecs.current) keySpecs.push({ label: “ID”, value: String(productSpecs.current), unit: “A” });
-if (productSpecs.rds) keySpecs.push({ label: “RDS(on)”, value: productSpecs.rds < 1 ? String(Math.round(productSpecs.rds * 10) / 10) : String(Math.round(productSpecs.rds)), unit: “m\u03a9” });
+if (productSpecs.rds) keySpecs.push({ label: “RDS(on)”, value: productSpecs.rds < 1 ? String(Math.round(productSpecs.rds * 10) / 10) : String(Math.round(productSpecs.rds)), unit: “mmOhm” });
 if (productSpecs.power) keySpecs.push({ label: “Pd”, value: String(productSpecs.power), unit: “W” });
 if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
 } else if (componentType === “bjt_npn” || componentType === “bjt_pnp”) {
@@ -483,7 +483,7 @@ if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
 } else if (componentType === “inductor”) {
 if (productSpecs.inductance) keySpecs.push({ label: “L”, value: productSpecs.inductance >= 1 ? String(Math.round(productSpecs.inductance * 10) / 10) : String(Math.round(productSpecs.inductance * 1000)), unit: productSpecs.inductance >= 1 ? “uH” : “nH” });
 if (productSpecs.current) keySpecs.push({ label: “Irated”, value: String(productSpecs.current), unit: “A” });
-if (productSpecs.dcr) keySpecs.push({ label: “DCR”, value: String(Math.round(productSpecs.dcr * 10) / 10), unit: “m\u03a9” });
+if (productSpecs.dcr) keySpecs.push({ label: “DCR”, value: String(Math.round(productSpecs.dcr * 10) / 10), unit: “mmOhm” });
 if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
 } else {
 // Generic - grab first 4 numeric params
@@ -808,7 +808,7 @@ if (s.current) lines.push(“Current >= “ + s.current + “A”);
 if (s.rds) lines.push(“Rds(on) <= “ + s.rds + “mOhm”);
 if (s.power) lines.push(“Power >= “ + s.power + “W”);
 if (lines.length === 0) lines.push(“Match: “ + originalPart.specsText.substring(0, 150));
-return “Find EXACTLY 4 alternatives for: “ + originalPart.mpn + “ by “ + originalPart.manufacturer + “ — “ + originalPart.description + “\nRequired specs: “ + lines.join(”, “) + “\nAll must meet or exceed. Real Digi-Key parts only. Different manufacturers.\nRespond ONLY with raw JSON starting with {:\n{"mode":"alt","originalPart":"” + originalPart.mpn + “","originalSpecs":"” + lines.join(”, “) + “","alternatives":[{"partNumber":"X","manufacturer":"Y","type":"N-Channel MOSFET","compatibility":"drop-in","keySpecs":[{"label":"VDS","value":"150","unit":"V"},{"label":"ID","value":"50","unit":"A"},{"label":"RDS(on)","value":"20","unit":"m\u03a9"},{"label":"Package","value":"TO-220","unit":""}],"package":"TO-220","whyAlternative":"reason","differences":"differences"}],"importantNote":"note"}”;
+return “Find EXACTLY 4 alternatives for: “ + originalPart.mpn + “ by “ + originalPart.manufacturer + “ — “ + originalPart.description + “\nRequired specs: “ + lines.join(”, “) + “\nAll must meet or exceed. Real Digi-Key parts only. Different manufacturers.\nRespond ONLY with raw JSON starting with {:\n{"mode":"alt","originalPart":"” + originalPart.mpn + “","originalSpecs":"” + lines.join(”, “) + “","alternatives":[{"partNumber":"X","manufacturer":"Y","type":"N-Channel MOSFET","compatibility":"drop-in","keySpecs":[{"label":"VDS","value":"150","unit":"V"},{"label":"ID","value":"50","unit":"A"},{"label":"RDS(on)","value":"20","unit":"m\mOhm"},{"label":"Package","value":"TO-220","unit":""}],"package":"TO-220","whyAlternative":"reason","differences":"differences"}],"importantNote":"note"}”;
 }
 
 // =============================================
