@@ -353,12 +353,10 @@ app.post("/api/chat", async function(req, res) {
       var bomData = bomResult.text ? extractJSON(bomResult.text) : null;
       if (!bomData || !bomData.bomItems) return res.json({ text: "Could you describe the application in more detail? For example: input voltage, output current, key requirements.", intent: intent, mode: "question" });
 
-      // Fetch stock for all BOM parts in parallel
-      var bomPNs = bomData.bomItems.map(function(p) { return p.partNumber; });
-      console.log("Fetching stock for", bomPNs.length, "BOM parts...");
-      var bomStockPromises = bomPNs.map(function(pn2) { return fetchStock(pn2); });
-      var bomStockResults = await Promise.all(bomStockPromises);
-      var bomStockMap = {};
+      // Don't fetch stock here - frontend will fetch in background
+      // This prevents timeout for large BOMs
+      bomData.stockData = {};
+
       bomPNs.forEach(function(pn2, i) { bomStockMap[pn2] = bomStockResults[i]; });
       bomData.stockData = bomStockMap;
 
@@ -488,6 +486,24 @@ app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async fu
     res.status(500).json({ error: "Failed to process file: " + err.message });
   }
 });
+
+app.post("/api/stock-bulk", async function(req, res) {
+  try {
+    var partNumbers = req.body.partNumbers || [];
+    if (partNumbers.length === 0) return res.json({});
+    console.log("Bulk stock lookup for", partNumbers.length, "parts");
+    var stockPromises = partNumbers.map(function(pn) { return fetchStock(pn); });
+    var stockResults = await Promise.all(stockPromises);
+    var stockMap = {};
+    partNumbers.forEach(function(pn, i) { stockMap[pn] = stockResults[i]; });
+    res.json(stockMap);
+  } catch (err) {
+    console.error("Stock bulk error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
