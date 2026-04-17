@@ -657,6 +657,11 @@ app.post("/api/chat", async function(req, res) {
 
     var filteredParts = filterBySpecs(allParts, requiredSpecs, componentType);
     console.log("After spec filter:", filteredParts.length, "of", allParts.length, "parts remain");
+    if (allParts.length > 0) {
+      console.log("Sample part specs:", JSON.stringify(allParts[0]._specs));
+      console.log("Sample part PN:", allParts[0].partNumber);
+      console.log("Required specs:", JSON.stringify(requiredSpecs));
+        }
     if (filteredParts.length < 3) { console.log("Too few after filter, relaxing"); filteredParts = allParts; }
 
     filteredParts = filteredParts.sort(function(a, b) {
