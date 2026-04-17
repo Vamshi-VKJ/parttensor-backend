@@ -74,9 +74,9 @@ async function searchNexar(componentType, requiredSpecs) {
     var filters = buildNexarFilters(componentType, requiredSpecs);
     console.log("Nexar search:", componentType, "filters:", JSON.stringify(filters));
 
-    var query = [
-      "query SearchParts($filters: PartFilterInput!, $limit: Int!) {",
-      "  supSearchMpn(q: \"\", filters: $filters, limit: $limit, currency: \"USD\", country: \"US\") {",
+        var query = [
+      "query SearchParts($q: String!, $limit: Int!) {",
+      "  supSearchMpn(q: $q, limit: $limit, currency: \"USD\", country: \"US\") {",
       "    hits",
       "    results {",
       "      part {",
@@ -99,10 +99,39 @@ async function searchNexar(componentType, requiredSpecs) {
       "}",
     ].join("\n");
 
+        // Build search query string from component type and specs
+    var qParts = [];
+    if (componentType === "mosfet_n") qParts.push("N-Channel MOSFET");
+    else if (componentType === "mosfet_p") qParts.push("P-Channel MOSFET");
+    else if (componentType === "igbt") qParts.push("IGBT");
+    else if (componentType === "bjt_npn") qParts.push("NPN Transistor");
+    else if (componentType === "bjt_pnp") qParts.push("PNP Transistor");
+    else if (componentType === "diode_schottky") qParts.push("Schottky Diode");
+    else if (componentType === "diode_zener") qParts.push("Zener Diode");
+    else if (componentType === "diode_rectifier") qParts.push("Rectifier Diode");
+    else if (componentType === "opamp") qParts.push("Op Amp");
+    else if (componentType === "ldo") qParts.push("LDO Regulator");
+    else if (componentType === "dcdc_buck") qParts.push("DC-DC Converter");
+    else if (componentType === "gate_driver") qParts.push("Gate Driver");
+    else if (componentType === "cap_ceramic") qParts.push("Ceramic Capacitor");
+    else if (componentType === "cap_electrolytic") qParts.push("Electrolytic Capacitor");
+    else if (componentType === "inductor") qParts.push("Power Inductor");
+    else qParts.push(componentType.replace(/_/g, " "));
+
+    if (requiredSpecs.voltage) qParts.push(requiredSpecs.voltage + "V");
+    if (requiredSpecs.current) qParts.push(requiredSpecs.current + "A");
+    if (requiredSpecs.capacitanceUF) qParts.push(requiredSpecs.capacitanceUF + "uF");
+    if (requiredSpecs.inductanceUH) qParts.push(requiredSpecs.inductanceUH + "uH");
+    if (requiredSpecs.gbwMHz) qParts.push(requiredSpecs.gbwMHz + "MHz");
+
+    var searchQ = qParts.join(" ");
+    console.log("Nexar query string:", searchQ);
+
     var variables = {
-      filters: filters,
+      q: searchQ,
       limit: 10,
     };
+
 
     var res = await fetch("https://api.nexar.com/graphql", {
       method: "POST",
