@@ -722,19 +722,30 @@ async function fetchProductDetails(mpn) {
     var controller = new AbortController();
     var timeout = setTimeout(function() { controller.abort(); }, 5000);
     var res = await fetch(
-      "https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn) + "/productdetails",
+      "https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn).replace(/%23/g, "%2523") + "/productdetails",
       { method: "GET", signal: controller.signal, headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
     );
         clearTimeout(timeout);
-    if (!res.ok) {
-      var errText = await res.text();
-      console.log("  fetchProductDetails failed:", res.status, mpn, errText.substring(0, 100));
-      return null;
-    }
+        if (!res.ok) {
+      console.log("  fetchProductDetails failed:", res.status, mpn, "trying keyword search...");
+      // Fallback to keyword search
+      var res2 = await fetch("https://api.digikey.com/products/v4/search/keyword", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD", "Content-Type": "application/json" },
+        body: JSON.stringify({ Keywords: mpn, Limit: 1, Offset: 0 }),
+      });
+      
+      if (!res2.ok) return null;
+      var data2 = await res2.json();
+      var products2 = data2.Products || [];
+      return products2.length > 0 ? products2[0] : null;
+      }
+
     var data = await res.json();
     var product = data.Product || data;
-    console.log("  fetchProductDetails OK:", mpn, "params:", (product.Parameters || []).length);
+    console.log("  fetchProductDetails OK:", mpn, "params:", (product.Parameters || []).length, "keys:", Object.keys(product).join(",").substring(0, 100));
     return product;
+
   } catch (e) {
     console.log("  fetchProductDetails error:", mpn, e.message);
     return null;
