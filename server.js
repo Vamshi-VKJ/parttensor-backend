@@ -377,7 +377,7 @@ async function callAI(system, messages, maxTokens) {
 // =============================================
 // SYSTEM PROMPTS
 // =============================================
-var INTENT_SYSTEM = "You classify hardware engineering queries. Respond ONLY with JSON, no other text:\n{\"intent\":\"part_search|find_alternatives|generate_bom|circuit_question|calculation|correction|general\",\"partNumber\":\"extracted part number or null\",\"needsMoreInfo\":false,\"followUpQuestion\":null}\nintent rules: part_search=finding a component, find_alternatives=replacement for specific part, generate_bom=system description needs BOM, circuit_question=design/topology/theory, calculation=numerical calculation, correction=user fixing previous answer, general=other electronics question. Set needsMoreInfo true ONLY if absolutely critical info is missing.";
+var INTENT_SYSTEM = "You classify hardware engineering queries. Consider the full conversation context — if the new message is a follow-up refinement (like 'only in stock', 'cheaper option', 'same but different package', 'find alternatives for the first one'), classify it as the SAME intent as the previous turn, not as a new unrelated query. Respond ONLY with JSON:\n{\"intent\":\"part_search|find_alternatives|generate_bom|circuit_question|calculation|correction|general\",\"partNumber\":\"extracted part number or null\",\"needsMoreInfo\":false,\"followUpQuestion\":null}\nIntent rules: part_search=finding a component, find_alternatives=replacement for specific part, generate_bom=system needs BOM, circuit_question=design/topology/theory, calculation=numerical calculation, correction=user fixing previous answer, general=other. Set needsMoreInfo true ONLY if absolutely critical info is missing with no context from history.";
 
 var ENGINEERING_SYSTEM = "You are PartTensor, a senior hardware application engineer AI. Help engineers with component selection, circuit design, calculations, and troubleshooting. Be direct, technical and precise. Use real part numbers and formulas. Format with **bold headers** and - bullet points where helpful. Keep answers focused and practical.";
 
@@ -416,9 +416,15 @@ app.post("/api/chat", async function(req, res) {
     console.log("\n[CHAT]", message.substring(0, 80));
 
     // STEP 1: CLASSIFY INTENT
-    var contextSummary = history.slice(-4).map(function(m) { return m.role + ": " + (m.content || "").substring(0, 100); }).join("\n");
-    var intentInput = "Recent conversation:\n" + contextSummary + "\n\nNew message: " + message;
-    var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 200);
+    var contextSummary = history.slice(-6).map(function(m) {
+  return (m.role === "user" ? "User: " : "AI: ") + (m.content || "").substring(0, 150);
+}).join("\n");
+
+var intentInput = history.length > 0
+  ? "Previous conversation:\n" + contextSummary + "\n\nNew message: " + message
+  : message;
+
+var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 300);
     var intent = "part_search";
     var needsMoreInfo = false;
     var followUpQuestion = null;
@@ -520,7 +526,7 @@ app.post("/api/chat", async function(req, res) {
       var cachedBOM = getCached(aiCache, bomCacheKey);
       if (cachedBOM) { console.log("BOM cache hit"); return res.json(cachedBOM); }
 
-      var bomResult = await callAI(BOM_SYSTEM, [{ role: "user", content: message }], 4000);
+      var bomResult = await callAI(BOM_SYSTEM, fullMessages, 4000);
       var bomData = bomResult.text ? extractJSON(bomResult.text) : null;
       if (!bomData || !bomData.bomItems) {
         return res.json({ text: "I had trouble generating the BOM. Could you describe the application in more detail — voltage, current, key requirements?", intent: intent, mode: "question" });
@@ -548,7 +554,7 @@ app.post("/api/chat", async function(req, res) {
     var cachedSearch = getCached(aiCache, searchCacheKey);
     if (cachedSearch) { console.log("Search cache hit"); return res.json(cachedSearch); }
 
-    var searchResult = await callAI(SEARCH_SYSTEM, [{ role: "user", content: message }], 4000);
+    var searchResult = await callAI(SEARCH_SYSTEM, fullMessages, 4000);
     var searchData = searchResult.text ? extractJSON(searchResult.text) : null;
 
     if (!searchData || !searchData.results) {
