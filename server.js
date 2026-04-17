@@ -122,13 +122,14 @@ async function searchByCategory(categoryKey, limit) {
     var cat = DK_CATEGORIES[categoryKey];
     if (!cat) return null;
     var body = {
-      Keywords: "",
-      Limit: limit || 50,
-      Offset: 0,
-      FilterOptionsRequest: { InStock: true },
-      CategoryFilter: { CategoryId: cat.id },
-      SortOptions: { Field: "QuantityAvailable", SortOrder: "Descending" },
-    };
+     Keywords: cat.name,
+     Limit: limit || 50,
+     Offset: 0,
+     FilterOptionsRequest: { InStock: true },
+     CategoryFilter: { CategoryId: cat.id },
+     SortOptions: { Field: "QuantityAvailable", SortOrder: "Descending" },
+     };
+
     console.log("DigiKey category search:", cat.name, "id=" + cat.id);
     var res = await fetch("https://api.digikey.com/products/v4/search/keyword", {
       method: "POST",
