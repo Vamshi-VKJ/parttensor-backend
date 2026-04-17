@@ -144,12 +144,15 @@ async function searchByCategory(categoryKey, limit) {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      console.error("DigiKey search failed:", res.status);
-      return null;
-    }
+    var errBody = await res.text();
+    console.error("DigiKey search failed:", res.status, errBody.substring(0, 500));
+    return null;
+                 }
     var data = await res.json();
     var products = data.Products || [];
     console.log("DigiKey returned", products.length, "products for", cat.name);
+    console.log("DigiKey raw response keys:", Object.keys(data));
+    if (products.length === 0) console.log("DigiKey full response:", JSON.stringify(data).substring(0, 500));
     return products;
   } catch (e) {
     console.error("DigiKey category search error:", e.message);
