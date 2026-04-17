@@ -718,19 +718,29 @@ async function fetchProductDetails(mpn) {
   try {
     var fetch = (await import("node-fetch")).default;
     var token = await getDigikeyToken();
-    if (!token) return null;
+    if (!token) { console.log("  fetchProductDetails: no token"); return null; }
     var controller = new AbortController();
-    var timeout = setTimeout(function() { controller.abort(); }, 3000);
+    var timeout = setTimeout(function() { controller.abort(); }, 5000);
     var res = await fetch(
       "https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn) + "/productdetails",
       { method: "GET", signal: controller.signal, headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
     );
-    clearTimeout(timeout);
-    if (!res.ok) return null;
+        clearTimeout(timeout);
+    if (!res.ok) {
+      var errText = await res.text();
+      console.log("  fetchProductDetails failed:", res.status, mpn, errText.substring(0, 100));
+      return null;
+    }
     var data = await res.json();
-    return data.Product || data;
-  } catch (e) { return null; }
+    var product = data.Product || data;
+    console.log("  fetchProductDetails OK:", mpn, "params:", (product.Parameters || []).length);
+    return product;
+  } catch (e) {
+    console.log("  fetchProductDetails error:", mpn, e.message);
+    return null;
+  }
 }
+
 
 
 
