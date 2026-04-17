@@ -536,7 +536,6 @@ var isCorrection = req.body.isCorrection || false;
 if (!message) return res.status(400).json({ error: “Message is required” });
 console.log(”\n[CHAT]”, message.substring(0, 80));
 
-```
 var requiredSpecs = extractRequiredSpecs(message);
 var contextSummary = history.slice(-6).map(function(m) { return (m.role === "user" ? "User: " : "AI: ") + (m.content || "").substring(0, 150); }).join("\n");
 var intentInput = history.length > 0 ? "Previous conversation:\n" + contextSummary + "\n\nNew message: " + message : message;
@@ -695,7 +694,6 @@ if (enrichResult.text) {
 topParts.forEach(function(p) { delete p._specs; });
 
 return res.json({ text: "Found " + topParts.length + " real parts from DigiKey. Best match first:", mode: "search", category: category, interpretation: interpretation, results: topParts, stockData: stockDataMap, designTip: designTip, intent: intent, source: "DigiKey catalog" });
-```
 
 } catch (err) {
 console.error(“Chat error:”, err.message, err.stack);
