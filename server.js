@@ -575,6 +575,22 @@ app.get("/api/health", function(req, res) {
   res.json({ status: "ok", service: "PartTensor", time: new Date().toISOString() });
 });
 
+async function fetchProductDetails(mpn) {
+  try {
+    var fetch = (await import("node-fetch")).default;
+    var token = await getDigikeyToken();
+    if (!token) return null;
+    var res = await fetch(
+      "https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn) + "/productdetails",
+      { method: "GET", headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
+    );
+    if (!res.ok) return null;
+    var data = await res.json();
+    return data.Product || data;
+  } catch (e) { return null; }
+}
+
+
 app.post("/api/chat", async function(req, res) {
   try {
     var message = req.body.message;
@@ -714,7 +730,33 @@ app.post("/api/chat", async function(req, res) {
     });
 
     var topParts = filteredParts.slice(0, 4);
-    console.log("Top parts:", topParts.map(function(p) { return p.partNumber + "(" + p.dkStock + ")"; }).join(", "));
+console.log("Top parts:", topParts.map(function(p) { return p.partNumber + "(" + p.dkStock + ")"; }).join(", "));
+
+// Fetch full details for each part to get real specs
+for (var di = 0; di < topParts.length; di++) {
+  var fullProduct = await fetchProductDetails(topParts[di].partNumber);
+  if (fullProduct && fullProduct.Parameters && fullProduct.Parameters.length > 0) {
+    var realSpecs = extractSpecsFromParameters(fullProduct.Parameters);
+    topParts[di]._specs = realSpecs;
+    topParts[di].keySpecs = buildKeySpecs(fullProduct.Parameters, realSpecs, componentType, fullProduct);
+    console.log("  Full specs for", topParts[di].partNumber, ":", JSON.stringify(realSpecs));
+  }
+}
+
+// Re-filter with real specs now that we have them
+topParts = topParts.filter(function(p) {
+  var ps = p._specs || {};
+  if (requiredSpecs.voltage && ps.voltage && ps.voltage < requiredSpecs.voltage * 0.95) {
+    console.log("  REJECTED", p.partNumber, "voltage", ps.voltage, "< required", requiredSpecs.voltage);
+    return false;
+  }
+  if (requiredSpecs.current && ps.current && ps.current < requiredSpecs.current * 0.95) {
+    console.log("  REJECTED", p.partNumber, "current", ps.current, "< required", requiredSpecs.current);
+    return false;
+  }
+  return true;
+});
+console.log("After detail re-filter:", topParts.length, "parts remain");
 
     var stockDataMap = {};
     for (var ti = 0; ti < topParts.length; ti++) {
