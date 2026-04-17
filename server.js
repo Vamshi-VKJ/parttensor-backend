@@ -290,7 +290,7 @@ async function searchDigikeyParametric(componentType, requiredSpecs, keyword) {
     console.log("DigiKey parametric search: category=" + (category ? category.name : "keyword") + " filters=" + filters.length);
 
     var searchBody = {
-      Keywords: keyword || "",
+      Keywords: "",
       Limit: 20,
       Offset: 0,
       FilterOptionsRequest: {
@@ -883,7 +883,8 @@ app.post("/api/chat", async function(req, res) {
       var compType = detectComponentType(originalPart.description + " " + originalPart.categoryName);
       var dkProducts = null;
       if (compType) {
-        dkProducts = await searchDigikeyParametric(compType, originalPart.specs, "");
+        var dkProducts2 = await searchDigikeyParametric(componentType, requiredSpecs, "");
+
       }
 
       if (!dkProducts || dkProducts.length === 0) {
@@ -1068,7 +1069,8 @@ app.post("/api/chat", async function(req, res) {
         var kwRes = await fetch2("https://api.digikey.com/products/v4/search/keyword", {
           method: "POST",
           headers: { "Authorization": "Bearer " + kwToken, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD", "Content-Type": "application/json" },
-          body: JSON.stringify({ Keywords: message.replace(/[^a-zA-Z0-9\s]/g, " ").substring(0, 100), Limit: 10, Offset: 0, FilterOptionsRequest: { InStock: true } }),
+          body: JSON.stringify({ Keywords: componentType ? (DK_CATEGORIES[componentType] && DK_CATEGORIES[componentType].name) || "" : message.replace(/[^a-zA-Z0-9\s]/g, " ").substring(0, 60), Limit: 10,
+
         });
         if (kwRes.ok) {
           var kwData = await kwRes.json();
