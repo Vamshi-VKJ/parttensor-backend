@@ -719,15 +719,19 @@ async function fetchProductDetails(mpn) {
     var fetch = (await import("node-fetch")).default;
     var token = await getDigikeyToken();
     if (!token) return null;
+    var controller = new AbortController();
+    var timeout = setTimeout(function() { controller.abort(); }, 3000);
     var res = await fetch(
       "https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn) + "/productdetails",
-      { method: "GET", headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
+      { method: "GET", signal: controller.signal, headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
     );
+    clearTimeout(timeout);
     if (!res.ok) return null;
     var data = await res.json();
     return data.Product || data;
   } catch (e) { return null; }
 }
+
 
 
 app.post("/api/chat", async function(req, res) {
@@ -871,7 +875,7 @@ app.post("/api/chat", async function(req, res) {
     });
 
     // Fetch full details for top 10 candidates to get real specs
-var candidates = filteredParts.slice(0, 10);
+var candidates = filteredParts.slice(0, 5);
 console.log("Fetching details for", candidates.length, "candidates...");
 var detailPromises = candidates.map(function(p) { return fetchProductDetails(p.partNumber); });
 var detailResults = await Promise.all(detailPromises);
@@ -908,8 +912,11 @@ console.log("Top parts:", topParts.map(function(p) { return p.partNumber + "(" +
 
 
     var stockDataMap = {};
-      var mouserPromises = topParts.map(function(p) { return lookupMouser(p.partNumber); });
-   var mouserResults = await Promise.all(mouserPromises);
+    // Only lookup Mouser for parts with low DigiKey stock
+    var mouserPromises = topParts.map(function(p) {
+    return p.dkStock > 1000 ? Promise.resolve(null) : lookupMouser(p.partNumber);
+    });
+var mouserResults = await Promise.all(mouserPromises);
   for (var ti = 0; ti < topParts.length; ti++) {
   var mpn = topParts[ti].partNumber;
   var cached = getCached(stockCache, mpn);
