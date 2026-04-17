@@ -305,9 +305,288 @@ async function fetchPartSpecs(mpn) {
       octopartUrl: "https://octopart.com/search?q=" + encodeURIComponent(mpn) + "&in_stock=1",
     };
   } catch (e) {
-    console.error("fetchPartSpecs failed for " + mpn + ":", e.message);
+    console.error("fetchPartSpecs failed:", e.message);
     return null;
   }
+}
+
+// =============================================
+// UNIVERSAL SPEC EXTRACTOR
+// Parses any query and extracts required specs
+// Works for MOSFETs, op-amps, regulators,
+// capacitors, inductors, diodes, BJTs, etc.
+// =============================================
+function extractRequiredSpecs(query) {
+  var lower = query.toLowerCase();
+  var specs = {};
+
+  // Voltage — matches: 100V, 100 V, 100v, 3.3V, 24V
+  var voltageMatches = lower.match(/(\d+(?:\.\d+)?)\s*v\b/gi) || [];
+  if (voltageMatches.length > 0) {
+    var voltages = voltageMatches.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v); });
+    // Pick the most specific voltage (not round numbers like 5,3.3 which are likely supply)
+    // For MOSFETs/diodes the voltage rating is usually the highest number
+    if (voltages.length > 0) specs.voltage = Math.max.apply(null, voltages);
+  }
+
+  // Current — matches: 30A, 30 A, 500mA, 2.5A
+  var currentA = lower.match(/(\d+(?:\.\d+)?)\s*a\b/gi) || [];
+  var currentMA = lower.match(/(\d+(?:\.\d+)?)\s*ma\b/gi) || [];
+  if (currentA.length > 0) {
+    var amps = currentA.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v); });
+    if (amps.length > 0) specs.current = Math.max.apply(null, amps);
+  } else if (currentMA.length > 0) {
+    var ma = currentMA.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v); });
+    if (ma.length > 0) specs.currentMA = Math.max.apply(null, ma);
+  }
+
+  // Power — matches: 10W, 500mW, 1.5W
+  var powerW = lower.match(/(\d+(?:\.\d+)?)\s*w\b/gi) || [];
+  var powerMW = lower.match(/(\d+(?:\.\d+)?)\s*mw\b/gi) || [];
+  if (powerW.length > 0) {
+    var watts = powerW.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v) && v > 0.1; });
+    if (watts.length > 0) specs.power = Math.max.apply(null, watts);
+  } else if (powerMW.length > 0) {
+    var mw = powerMW.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v); });
+    if (mw.length > 0) specs.powerMW = Math.max.apply(null, mw);
+  }
+
+  // Capacitance — matches: 100uF, 100nF, 10pF
+  var capUF = lower.match(/(\d+(?:\.\d+)?)\s*uf\b/gi) || [];
+  var capNF = lower.match(/(\d+(?:\.\d+)?)\s*nf\b/gi) || [];
+  var capPF = lower.match(/(\d+(?:\.\d+)?)\s*pf\b/gi) || [];
+  if (capUF.length > 0) specs.capacitanceUF = parseFloat(capUF[0]);
+  else if (capNF.length > 0) specs.capacitanceNF = parseFloat(capNF[0]);
+  else if (capPF.length > 0) specs.capacitancePF = parseFloat(capPF[0]);
+
+  // Inductance — matches: 10uH, 100nH, 1mH
+  var indUH = lower.match(/(\d+(?:\.\d+)?)\s*uh\b/gi) || [];
+  var indNH = lower.match(/(\d+(?:\.\d+)?)\s*nh\b/gi) || [];
+  var indMH = lower.match(/(\d+(?:\.\d+)?)\s*mh\b/gi) || [];
+  if (indUH.length > 0) specs.inductanceUH = parseFloat(indUH[0]);
+  else if (indNH.length > 0) specs.inductanceNH = parseFloat(indNH[0]);
+  else if (indMH.length > 0) specs.inductanceMH = parseFloat(indMH[0]);
+
+  // Resistance — matches: 10k, 4.7k, 100R, 10ohm
+  var resK = lower.match(/(\d+(?:\.\d+)?)\s*k\s*(?:ohm|ohms|\b)/gi) || [];
+  var resR = lower.match(/(\d+(?:\.\d+)?)\s*(?:ohm|ohms|r\b)/gi) || [];
+  if (resK.length > 0) specs.resistanceKOhm = parseFloat(resK[0]);
+  else if (resR.length > 0) specs.resistanceOhm = parseFloat(resR[0]);
+
+  // Frequency — matches: 100kHz, 1MHz, 50Hz
+  var freqMHz = lower.match(/(\d+(?:\.\d+)?)\s*mhz\b/gi) || [];
+  var freqKHz = lower.match(/(\d+(?:\.\d+)?)\s*khz\b/gi) || [];
+  var freqHz = lower.match(/(\d+(?:\.\d+)?)\s*hz\b/gi) || [];
+  if (freqMHz.length > 0) specs.freqMHz = parseFloat(freqMHz[0]);
+  else if (freqKHz.length > 0) specs.freqKHz = parseFloat(freqKHz[0]);
+  else if (freqHz.length > 0) specs.freqHz = parseFloat(freqHz[0]);
+
+  // Gain-Bandwidth — matches: GBW 10MHz, 10MHz GBW
+  if (lower.includes("gbw") || lower.includes("gain bandwidth") || lower.includes("gain-bandwidth")) {
+    if (freqMHz.length > 0) specs.gbwMHz = parseFloat(freqMHz[0]);
+  }
+
+  // Noise — matches: 5nV/Hz, low noise
+  var noiseNV = lower.match(/(\d+(?:\.\d+)?)\s*nv/gi) || [];
+  if (noiseNV.length > 0) specs.noiseNV = parseFloat(noiseNV[0]);
+
+  // Dropout voltage — matches: 300mV dropout, <300mV
+  var dropoutMV = lower.match(/(\d+(?:\.\d+)?)\s*mv\s*(?:dropout|drop)/gi) || [];
+  if (dropoutMV.length > 0) specs.dropoutMV = parseFloat(dropoutMV[0]);
+
+  // Temperature range — matches: -40 to 125, 125C
+  var tempMatch = lower.match(/(\d+)\s*(?:c|celsius|degrees)/gi) || [];
+  if (tempMatch.length > 0) specs.tempC = parseFloat(tempMatch[tempMatch.length - 1]);
+
+  console.log("Extracted required specs from query:", JSON.stringify(specs));
+  return specs;
+}
+
+// =============================================
+// UNIVERSAL SPEC VALIDATOR
+// Checks any component type against requirements
+// =============================================
+function validateSpecs(parts, requiredSpecs) {
+  if (!parts || parts.length === 0) return parts;
+  if (!requiredSpecs || Object.keys(requiredSpecs).length === 0) return parts;
+
+  var TOLERANCE = 0.95; // allow 5% tolerance
+
+  // Spec label mappings — what labels in keySpecs mean what
+  var VOLTAGE_LABELS = ["vds", "vce", "vceo", "vcc", "vdd", "vrrm", "vrwm", "vr", "working voltage", "breakdown voltage", "rated voltage", "max voltage", "supply voltage", "voltage", "v"];
+  var CURRENT_LABELS = ["id", "ic", "if", "iout", "drain current", "collector current", "output current", "forward current", "continuous current", "rated current", "max current", "current", "a"];
+  var POWER_LABELS = ["pd", "ptot", "power dissipation", "rated power", "max power", "power", "w"];
+  var CAP_LABELS = ["capacitance", "cap", "uf", "nf", "pf"];
+  var IND_LABELS = ["inductance", "ind", "uh", "nh", "mh"];
+  var RES_LABELS = ["resistance", "res", "ohm", "kohm"];
+  var FREQ_LABELS = ["frequency", "freq", "bandwidth", "gbw", "gain bandwidth", "unity gain", "mhz", "khz"];
+  var NOISE_LABELS = ["noise", "en", "vn", "noise density", "input noise"];
+  var DROPOUT_LABELS = ["dropout", "vdo", "dropout voltage"];
+
+  function getSpecValue(keySpecs, labels) {
+    if (!keySpecs || !Array.isArray(keySpecs)) return null;
+    for (var i = 0; i < keySpecs.length; i++) {
+      var spec = keySpecs[i];
+      var label = (spec.label || "").toLowerCase().trim();
+      var value = parseFloat(spec.value);
+      if (isNaN(value)) continue;
+      for (var j = 0; j < labels.length; j++) {
+        if (label === labels[j] || label.indexOf(labels[j]) !== -1) {
+          return { value: value, unit: (spec.unit || "").toLowerCase() };
+        }
+      }
+    }
+    return null;
+  }
+
+  function convertToBaseUnit(specResult) {
+    if (!specResult) return null;
+    var val = specResult.value;
+    var unit = specResult.unit;
+    if (unit === "mv") return val / 1000;
+    if (unit === "kv") return val * 1000;
+    if (unit === "ma") return val / 1000;
+    if (unit === "ka") return val * 1000;
+    if (unit === "mw") return val / 1000;
+    if (unit === "kw") return val * 1000;
+    if (unit === "nh") return val / 1000;
+    if (unit === "mh") return val * 1000;
+    if (unit === "nf") return val / 1000;
+    if (unit === "mf") return val * 1000;
+    if (unit === "kohm" || unit === "k") return val * 1000;
+    if (unit === "mohm" || unit === "m") return val * 1000000;
+    if (unit === "khz") return val * 1000;
+    if (unit === "mhz") return val * 1000000;
+    if (unit === "ghz") return val * 1000000000;
+    return val;
+  }
+
+  var filtered = parts.filter(function(part) {
+    var specs = part.keySpecs || [];
+    var passed = true;
+    var rejectionReason = "";
+
+    // Check voltage rating
+    if (requiredSpecs.voltage) {
+      var partVoltage = getSpecValue(specs, VOLTAGE_LABELS);
+      if (partVoltage) {
+        var v = convertToBaseUnit(partVoltage);
+        if (v < requiredSpecs.voltage * TOLERANCE) {
+          passed = false;
+          rejectionReason = "voltage " + v + "V < required " + requiredSpecs.voltage + "V";
+        }
+      }
+    }
+
+    // Check current rating
+    if (passed && requiredSpecs.current) {
+      var partCurrent = getSpecValue(specs, CURRENT_LABELS);
+      if (partCurrent) {
+        var c = convertToBaseUnit(partCurrent);
+        if (c < requiredSpecs.current * TOLERANCE) {
+          passed = false;
+          rejectionReason = "current " + c + "A < required " + requiredSpecs.current + "A";
+        }
+      }
+    }
+
+    // Check current in mA
+    if (passed && requiredSpecs.currentMA) {
+      var partCurrentMA = getSpecValue(specs, CURRENT_LABELS);
+      if (partCurrentMA) {
+        var cma = convertToBaseUnit(partCurrentMA) * 1000;
+        if (cma < requiredSpecs.currentMA * TOLERANCE) {
+          passed = false;
+          rejectionReason = "current " + cma + "mA < required " + requiredSpecs.currentMA + "mA";
+        }
+      }
+    }
+
+    // Check power rating
+    if (passed && requiredSpecs.power) {
+      var partPower = getSpecValue(specs, POWER_LABELS);
+      if (partPower) {
+        var p = convertToBaseUnit(partPower);
+        if (p < requiredSpecs.power * TOLERANCE) {
+          passed = false;
+          rejectionReason = "power " + p + "W < required " + requiredSpecs.power + "W";
+        }
+      }
+    }
+
+    // Check capacitance (allow +-20% for capacitors)
+    if (passed && requiredSpecs.capacitanceUF) {
+      var partCap = getSpecValue(specs, CAP_LABELS);
+      if (partCap) {
+        var capUF = convertToBaseUnit(partCap);
+        if (Math.abs(capUF - requiredSpecs.capacitanceUF) / requiredSpecs.capacitanceUF > 0.20) {
+          passed = false;
+          rejectionReason = "capacitance " + capUF + "uF != required " + requiredSpecs.capacitanceUF + "uF";
+        }
+      }
+    }
+
+    // Check inductance (allow +-20%)
+    if (passed && requiredSpecs.inductanceUH) {
+      var partInd = getSpecValue(specs, IND_LABELS);
+      if (partInd) {
+        var indUH = convertToBaseUnit(partInd);
+        if (Math.abs(indUH - requiredSpecs.inductanceUH) / requiredSpecs.inductanceUH > 0.20) {
+          passed = false;
+          rejectionReason = "inductance " + indUH + "uH != required " + requiredSpecs.inductanceUH + "uH";
+        }
+      }
+    }
+
+    // Check GBW for op-amps (must meet or exceed)
+    if (passed && requiredSpecs.gbwMHz) {
+      var partGBW = getSpecValue(specs, FREQ_LABELS);
+      if (partGBW) {
+        var gbw = convertToBaseUnit(partGBW) / 1000000;
+        if (gbw < requiredSpecs.gbwMHz * TOLERANCE) {
+          passed = false;
+          rejectionReason = "GBW " + gbw + "MHz < required " + requiredSpecs.gbwMHz + "MHz";
+        }
+      }
+    }
+
+    // Check noise for op-amps (must be <= required, lower is better)
+    if (passed && requiredSpecs.noiseNV) {
+      var partNoise = getSpecValue(specs, NOISE_LABELS);
+      if (partNoise) {
+        if (partNoise.value > requiredSpecs.noiseNV * (1 / TOLERANCE)) {
+          passed = false;
+          rejectionReason = "noise " + partNoise.value + "nV > required " + requiredSpecs.noiseNV + "nV";
+        }
+      }
+    }
+
+    // Check dropout for LDOs (must be <= required)
+    if (passed && requiredSpecs.dropoutMV) {
+      var partDropout = getSpecValue(specs, DROPOUT_LABELS);
+      if (partDropout) {
+        var dropout = convertToBaseUnit(partDropout) * 1000;
+        if (dropout > requiredSpecs.dropoutMV * (1 / TOLERANCE)) {
+          passed = false;
+          rejectionReason = "dropout " + dropout + "mV > required " + requiredSpecs.dropoutMV + "mV";
+        }
+      }
+    }
+
+    if (!passed) {
+      console.log("  REJECTED", part.partNumber, "-", rejectionReason);
+    }
+    return passed;
+  });
+
+  // Only use filtered results if we have at least 2 valid parts
+  if (filtered.length >= 2) {
+    console.log("Spec validation: kept " + filtered.length + "/" + parts.length + " parts");
+    return filtered;
+  }
+
+  console.log("Spec validation: not enough valid parts, keeping all");
+  return parts;
 }
 
 // =============================================
@@ -377,13 +656,13 @@ async function callAI(system, messages, maxTokens) {
 // =============================================
 // SYSTEM PROMPTS
 // =============================================
-var INTENT_SYSTEM = "You classify hardware engineering queries. Consider the full conversation context — if the new message is a follow-up refinement (like 'only in stock', 'cheaper option', 'same but different package', 'find alternatives for the first one'), classify it as the SAME intent as the previous turn, not as a new unrelated query. Respond ONLY with JSON:\n{\"intent\":\"part_search|find_alternatives|generate_bom|circuit_question|calculation|correction|general\",\"partNumber\":\"extracted part number or null\",\"needsMoreInfo\":false,\"followUpQuestion\":null}\nIntent rules: part_search=finding a component, find_alternatives=replacement for specific part, generate_bom=system needs BOM, circuit_question=design/topology/theory, calculation=numerical calculation, correction=user fixing previous answer, general=other. Set needsMoreInfo true ONLY if absolutely critical info is missing with no context from history.";
+var INTENT_SYSTEM = "You classify hardware engineering queries. Consider full conversation context — if the new message is a follow-up refinement (like 'only in stock', 'cheaper option', 'different package', 'find alternatives for the first one', 'suggest parts for that'), classify it as the SAME intent as the previous turn. Respond ONLY with JSON:\n{\"intent\":\"part_search|find_alternatives|generate_bom|circuit_question|calculation|correction|general\",\"partNumber\":\"extracted part number or null\",\"needsMoreInfo\":false,\"followUpQuestion\":null}\nIntent rules: part_search=finding a component, find_alternatives=replacement for specific part, generate_bom=system needs BOM, circuit_question=design/topology/theory, calculation=numerical calculation, correction=user fixing previous answer, general=other. Set needsMoreInfo true ONLY if absolutely no useful information is available.";
 
 var ENGINEERING_SYSTEM = "You are PartTensor, a senior hardware application engineer AI. Help engineers with component selection, circuit design, calculations, and troubleshooting. Be direct, technical and precise. Use real part numbers and formulas. Format with **bold headers** and - bullet points where helpful. Keep answers focused and practical.";
 
-var SEARCH_SYSTEM = "You are a senior application engineer finding electronic components. Suggest EXACTLY 4 results from 4 DIFFERENT manufacturers. rank: first=top, second=good, third/fourth=alternative. First result must be absolute best fit. ALL parts must meet or exceed requested specs. Include exactly 5 keySpecs per part with numeric values. Use real Digi-Key part numbers only. Manufacturers: Infineon, Vishay, ON Semi, TI, STMicro, Analog Devices, Microchip, Renesas, Rohm, Nexperia.\nRespond ONLY with raw JSON starting with {:\n{\"mode\":\"search\",\"category\":\"N-Channel MOSFET\",\"interpretation\":\"one sentence\",\"results\":[{\"partNumber\":\"IRF540NPBF\",\"manufacturer\":\"Vishay\",\"type\":\"N-Channel MOSFET\",\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"100\",\"unit\":\"V\"},{\"label\":\"ID\",\"value\":\"33\",\"unit\":\"A\"},{\"label\":\"RDS(on)\",\"value\":\"44\",\"unit\":\"m\\u03a9\"},{\"label\":\"Qg\",\"value\":\"71\",\"unit\":\"nC\"},{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],\"package\":\"TO-220\",\"applications\":[\"Motor Drive\"],\"rank\":\"top\",\"aeComment\":\"Best fit because...\",\"caution\":null}],\"designTip\":\"one practical tip\"}";
+var SEARCH_SYSTEM = "You are a senior application engineer finding electronic components.\nCRITICAL SPEC RULES — YOU MUST FOLLOW THESE:\n1. If user requests 100V, ALL parts MUST have voltage rating >= 100V. NEVER suggest 60V or 80V parts.\n2. If user requests 30A, ALL parts MUST have current rating >= 30A.\n3. If user requests 10uH inductor, suggest parts with inductance close to 10uH.\n4. If user requests low noise op-amp with 5nV noise, suggest parts with noise <= 5nV.\n5. If user requests LDO with 300mV dropout, suggest parts with dropout <= 300mV.\n6. ALWAYS match the spec direction correctly: voltage/current/power = must meet or exceed. Noise/dropout/Rds = must be equal or lower.\n7. Include first keySpec as the primary rating that was requested (voltage for MOSFET, capacitance for cap, etc).\nSuggest EXACTLY 4 results from 4 DIFFERENT manufacturers. rank: first=top (best overall fit), second=good, third/fourth=alternative. Use real Digi-Key part numbers only.\nManufacturers: Infineon, Vishay, ON Semi, TI, STMicro, Analog Devices, Microchip, Renesas, Rohm, Nexperia, Murata, Wurth, Panasonic, Kemet, Taiyo Yuden.\nRespond ONLY with raw JSON starting with {:\n{\"mode\":\"search\",\"category\":\"N-Channel MOSFET\",\"interpretation\":\"one sentence\",\"results\":[{\"partNumber\":\"IRF540NPBF\",\"manufacturer\":\"Vishay\",\"type\":\"N-Channel MOSFET\",\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"100\",\"unit\":\"V\"},{\"label\":\"ID\",\"value\":\"33\",\"unit\":\"A\"},{\"label\":\"RDS(on)\",\"value\":\"44\",\"unit\":\"m\\u03a9\"},{\"label\":\"Qg\",\"value\":\"71\",\"unit\":\"nC\"},{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],\"package\":\"TO-220\",\"applications\":[\"Motor Drive\"],\"rank\":\"top\",\"aeComment\":\"Meets 100V/33A specs. Good for motor drive.\",\"caution\":null}],\"designTip\":\"one practical tip\"}";
 
-var BOM_SYSTEM = "You are a senior hardware application engineer. Generate a smart Bill of Materials. Include only critical components: MOSFETs, ICs, drivers, specialized inductors, electrolytic caps, current sense resistors, crystals, connectors, optocouplers, diodes, sensors. NO generic resistors, 100nF caps, generic LEDs. Use full Digi-Key part numbers. Include 5 keySpecs per part.\nRespond ONLY with raw JSON starting with {:\n{\"bomItems\":[{\"id\":1,\"function\":\"Gate Driver\",\"partNumber\":\"IR2184SPBF\",\"manufacturer\":\"Infineon\",\"description\":\"one line\",\"category\":\"IC\",\"quantity\":1,\"keySpecs\":\"600V 2A SO-8\",\"package\":\"SO-8\",\"priority\":\"critical\",\"unitPrice\":\"$1.20\",\"notes\":null}],\"projectName\":\"name\",\"description\":\"sentence\",\"voltage\":\"V\",\"power\":\"W\",\"designNotes\":\"notes\",\"totalEstimate\":\"$15-25\"}";
+var BOM_SYSTEM = "You are a senior hardware application engineer. Generate a smart Bill of Materials. Include only critical components: MOSFETs, ICs, drivers, specialized inductors, electrolytic caps, current sense resistors, crystals, connectors, optocouplers, diodes, sensors. NO generic resistors, 100nF caps, generic LEDs. Use full Digi-Key part numbers. Include 5 keySpecs per part. All parts must meet or exceed the specs described in the application.\nRespond ONLY with raw JSON starting with {:\n{\"bomItems\":[{\"id\":1,\"function\":\"Gate Driver\",\"partNumber\":\"IR2184SPBF\",\"manufacturer\":\"Infineon\",\"description\":\"one line\",\"category\":\"IC\",\"quantity\":1,\"keySpecs\":\"600V 2A SO-8\",\"package\":\"SO-8\",\"priority\":\"critical\",\"unitPrice\":\"$1.20\",\"notes\":null}],\"projectName\":\"name\",\"description\":\"sentence\",\"voltage\":\"V\",\"power\":\"W\",\"designNotes\":\"notes\",\"totalEstimate\":\"$15-25\"}";
 
 function buildAltSystem(originalPart) {
   var specs = originalPart.specs || {};
@@ -393,7 +672,7 @@ function buildAltSystem(originalPart) {
   if (specs.resistance) specLines.push("Rds/Ron <= " + specs.resistance);
   if (specs.power) specLines.push("Power >= " + specs.power + "W");
   if (specLines.length === 0) specLines.push("Match: " + originalPart.specsText.substring(0, 150));
-  return "Find EXACTLY 4 alternatives from 4 DIFFERENT manufacturers for: " + originalPart.mpn + " by " + originalPart.manufacturer + " — " + originalPart.description + "\nREQUIRED SPECS (from DigiKey real data): " + specLines.join(", ") + "\nAll must meet or EXCEED every spec. Real Digi-Key parts only. Different manufacturers than " + originalPart.manufacturer + ". Sort by best drop-in compatibility first. Include exactly 5 keySpecs per part.\nRespond ONLY with raw JSON starting with {:\n{\"mode\":\"alt\",\"originalPart\":\"" + originalPart.mpn + "\",\"originalSpecs\":\"" + specLines.join(", ") + "\",\"alternatives\":[{\"partNumber\":\"IRFB4115GPBF\",\"manufacturer\":\"Vishay\",\"type\":\"N-Channel MOSFET\",\"compatibility\":\"drop-in\",\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"150\",\"unit\":\"V\"},{\"label\":\"ID\",\"value\":\"104\",\"unit\":\"A\"},{\"label\":\"RDS(on)\",\"value\":\"11\",\"unit\":\"m\\u03a9\"},{\"label\":\"Qg\",\"value\":\"120\",\"unit\":\"nC\"},{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],\"package\":\"TO-220\",\"whyAlternative\":\"reason\",\"differences\":\"key differences\"}],\"importantNote\":\"note\"}";
+  return "Find EXACTLY 4 alternatives from 4 DIFFERENT manufacturers for: " + originalPart.mpn + " by " + originalPart.manufacturer + " — " + originalPart.description + "\nREQUIRED SPECS (real data from DigiKey): " + specLines.join(", ") + "\nAll must meet or EXCEED every spec. Real Digi-Key parts only. Different manufacturers than " + originalPart.manufacturer + ". Sort by best drop-in compatibility first. Include exactly 5 keySpecs.\nRespond ONLY with raw JSON starting with {:\n{\"mode\":\"alt\",\"originalPart\":\"" + originalPart.mpn + "\",\"originalSpecs\":\"" + specLines.join(", ") + "\",\"alternatives\":[{\"partNumber\":\"IRFB4115GPBF\",\"manufacturer\":\"Vishay\",\"type\":\"N-Channel MOSFET\",\"compatibility\":\"drop-in\",\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"150\",\"unit\":\"V\"},{\"label\":\"ID\",\"value\":\"104\",\"unit\":\"A\"},{\"label\":\"RDS(on)\",\"value\":\"11\",\"unit\":\"m\\u03a9\"},{\"label\":\"Qg\",\"value\":\"120\",\"unit\":\"nC\"},{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],\"package\":\"TO-220\",\"whyAlternative\":\"reason\",\"differences\":\"key differences\"}],\"importantNote\":\"note\"}";
 }
 
 // =============================================
@@ -415,16 +694,19 @@ app.post("/api/chat", async function(req, res) {
     if (!message) return res.status(400).json({ error: "Message is required" });
     console.log("\n[CHAT]", message.substring(0, 80));
 
-    // STEP 1: CLASSIFY INTENT
+    // Extract required specs from message for validation
+    var requiredSpecs = extractRequiredSpecs(message);
+
+    // STEP 1: CLASSIFY INTENT WITH HISTORY CONTEXT
     var contextSummary = history.slice(-6).map(function(m) {
-  return (m.role === "user" ? "User: " : "AI: ") + (m.content || "").substring(0, 150);
-}).join("\n");
+      return (m.role === "user" ? "User: " : "AI: ") + (m.content || "").substring(0, 150);
+    }).join("\n");
 
-var intentInput = history.length > 0
-  ? "Previous conversation:\n" + contextSummary + "\n\nNew message: " + message
-  : message;
+    var intentInput = history.length > 0
+      ? "Previous conversation:\n" + contextSummary + "\n\nNew message: " + message
+      : message;
 
-var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 300);
+    var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 300);
     var intent = "part_search";
     var needsMoreInfo = false;
     var followUpQuestion = null;
@@ -439,18 +721,20 @@ var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentI
         detectedPN = intentParsed.partNumber || null;
       }
     }
-    console.log("Intent:", intent, "| PN:", detectedPN);
+    console.log("Intent:", intent, "| PN:", detectedPN, "| Specs:", JSON.stringify(requiredSpecs));
 
     // STEP 2: ASK FOLLOW-UP IF NEEDED
     if (needsMoreInfo && followUpQuestion && !isCorrection) {
       return res.json({ text: followUpQuestion, intent: intent, mode: "question" });
     }
 
-    // Build message array with history
+    // Build full message array with history
     var fullMessages = [];
     var historySlice = history.slice(-8);
     for (var i = 0; i < historySlice.length; i++) {
-      if (historySlice[i].content) fullMessages.push({ role: historySlice[i].role, content: historySlice[i].content });
+      if (historySlice[i].content) {
+        fullMessages.push({ role: historySlice[i].role, content: historySlice[i].content });
+      }
     }
     fullMessages.push({ role: "user", content: message });
 
@@ -459,7 +743,7 @@ var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentI
     // CIRCUIT / CALCULATION / GENERAL / CORRECTION
     if (intent === "circuit_question" || intent === "calculation" || intent === "general" || intent === "correction") {
       var engSystem = ENGINEERING_SYSTEM;
-      if (isCorrection) engSystem += "\n\nThe user is correcting a previous response. Address their feedback directly and provide improved answer.";
+      if (isCorrection) engSystem += "\n\nThe user is correcting a previous response. Address their feedback directly.";
       var engResult = await callAI(engSystem, fullMessages, 2000);
       if (engResult.error) return res.status(503).json({ error: engResult.error });
       return res.json({ text: engResult.text, intent: intent, mode: "text" });
@@ -476,10 +760,11 @@ var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentI
       var originalPart = await fetchPartSpecs(pn);
 
       if (!originalPart) {
-        var fallbackAlt = await callAI(SEARCH_SYSTEM, [{ role: "user", content: "Find alternatives for " + pn }], 3000);
+        var fallbackAlt = await callAI(SEARCH_SYSTEM, fullMessages, 3000);
         var fallbackParsed = fallbackAlt.text ? extractJSON(fallbackAlt.text) : null;
-        if (!fallbackParsed) return res.json({ text: "I could not find detailed specs for " + pn + ". Could you provide the key specs to match (voltage, current, package)?", intent: intent, mode: "question" });
+        if (!fallbackParsed) return res.json({ text: "I could not find specs for " + pn + ". Could you provide the key specs to match?", intent: intent, mode: "question" });
         var fbParts = (fallbackParsed.alternatives || fallbackParsed.results || []);
+        fbParts = validateSpecs(fbParts, requiredSpecs);
         var fbStock = await prefetchStock(fbParts.map(function(p) { return p.partNumber; }));
         fallbackParsed.stockData = fbStock;
         fallbackParsed.mode = "alt";
@@ -488,7 +773,7 @@ var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentI
 
       if (originalPart.isPassive) {
         return res.json({
-          text: "For **" + pn + "** (" + originalPart.categoryName + "), parametric search gives the most accurate alternatives — it ensures exact spec matching.",
+          text: "For **" + pn + "** (" + originalPart.categoryName + "), parametric search gives the most accurate alternatives.",
           mode: "passive_connector_alt",
           originalPart: pn,
           originalManufacturer: originalPart.manufacturer,
@@ -510,12 +795,14 @@ var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentI
       if (!altData) return res.json({ text: "I had trouble finding alternatives for " + pn + ". Please try again.", intent: intent, mode: "text" });
 
       var altParts = altData.alternatives || [];
+      altParts = validateSpecs(altParts, originalPart.specs);
       var altStock = await prefetchStock(altParts.map(function(p) { return p.partNumber; }));
+      altData.alternatives = altParts;
       altData.stockData = altStock;
       altData.mode = "alt";
 
       return res.json(Object.assign({
-        text: "Here are **" + altParts.length + " alternatives** for **" + pn + "**, all meeting or exceeding its specs from DigiKey:",
+        text: "Here are **" + altParts.length + " alternatives** for **" + pn + "**, all meeting or exceeding its specs:",
         intent: intent,
       }, altData));
     }
@@ -529,53 +816,59 @@ var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentI
       var bomResult = await callAI(BOM_SYSTEM, fullMessages, 4000);
       var bomData = bomResult.text ? extractJSON(bomResult.text) : null;
       if (!bomData || !bomData.bomItems) {
-        return res.json({ text: "I had trouble generating the BOM. Could you describe the application in more detail — voltage, current, key requirements?", intent: intent, mode: "question" });
+        return res.json({ text: "I had trouble generating the BOM. Could you describe the application in more detail?", intent: intent, mode: "question" });
       }
 
       var bomParts = bomData.bomItems.map(function(p) { return p.partNumber; });
       var bomStock = await prefetchStock(bomParts);
       bomData.stockData = bomStock;
-
-      // Sort by stock
       bomData.bomItems = bomData.bomItems.sort(function(a, b) {
         var sa = bomStock[a.partNumber] ? bomStock[a.partNumber].totalStock : 0;
         var sb = bomStock[b.partNumber] ? bomStock[b.partNumber].totalStock : 0;
         return sb - sa;
       });
 
-      var bomText = "Here is a **sourcing-ready BOM** for your **" + bomData.projectName + "** — " + bomData.bomItems.length + " critical components, verified on Digi-Key:";
+      var bomText = "Here is a **sourcing-ready BOM** for your **" + bomData.projectName + "** — " + bomData.bomItems.length + " critical components:";
       var bomResponse = Object.assign({ text: bomText, intent: intent }, bomData);
       setCache(aiCache, bomCacheKey, bomResponse, AI_TTL);
       return res.json(bomResponse);
     }
 
     // PART SEARCH (default)
+    // DO NOT cache when there are specific specs — refinements must re-run
+    var hasSpecs = Object.keys(requiredSpecs).length > 0;
     var searchCacheKey = "search:" + message.toLowerCase().trim();
-    var cachedSearch = getCached(aiCache, searchCacheKey);
-    if (cachedSearch) { console.log("Search cache hit"); return res.json(cachedSearch); }
+    if (!hasSpecs) {
+      var cachedSearch = getCached(aiCache, searchCacheKey);
+      if (cachedSearch) { console.log("Search cache hit"); return res.json(cachedSearch); }
+    }
 
     var searchResult = await callAI(SEARCH_SYSTEM, fullMessages, 4000);
     var searchData = searchResult.text ? extractJSON(searchResult.text) : null;
 
     if (!searchData || !searchData.results) {
       var fallbackEng = await callAI(ENGINEERING_SYSTEM, fullMessages, 1500);
-      return res.json({ text: fallbackEng.text || "I could not find specific parts for that query. Could you provide more details about the specs you need?", intent: intent, mode: "text" });
+      return res.json({ text: fallbackEng.text || "I could not find specific parts. Could you provide more details about the specs you need?", intent: intent, mode: "text" });
     }
+
+    // VALIDATE SPECS — reject parts that don't meet requirements
+    searchData.results = validateSpecs(searchData.results, requiredSpecs);
 
     var searchParts = searchData.results.map(function(p) { return p.partNumber; });
     var searchStock = await prefetchStock(searchParts);
     searchData.stockData = searchStock;
     searchData.mode = "search";
 
+    // Sort by stock
     searchData.results = searchData.results.sort(function(a, b) {
       var sa = searchStock[a.partNumber] ? searchStock[a.partNumber].totalStock : 0;
       var sb = searchStock[b.partNumber] ? searchStock[b.partNumber].totalStock : 0;
       return sb - sa;
     });
 
-    var searchText = "Found **" + searchData.results.length + " options** — " + (searchData.interpretation || "") + ". Sorted by stock availability:";
+    var searchText = "Found **" + searchData.results.length + " options** — " + (searchData.interpretation || "") + ". Sorted by stock:";
     var searchResponse = Object.assign({ text: searchText, intent: intent }, searchData);
-    setCache(aiCache, searchCacheKey, searchResponse, AI_TTL);
+    if (!hasSpecs) setCache(aiCache, searchCacheKey, searchResponse, AI_TTL);
     return res.json(searchResponse);
 
   } catch (err) {
@@ -589,10 +882,6 @@ var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentI
 // =============================================
 app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async function(req, res) {
   try {
-    var contentType = req.headers["content-type"] || "";
-    var filename = req.headers["x-filename"] || "bom.csv";
-
-    // Parse CSV from raw body
     var fileContent = req.body.toString("utf8");
     var lines = fileContent.split("\n").filter(function(l) { return l.trim(); });
     if (lines.length === 0) return res.status(400).json({ error: "Empty file" });
@@ -612,10 +901,9 @@ app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async fu
       if (cols[pnColIdx]) partNumbers.push(cols[pnColIdx]);
     }
 
-    if (partNumbers.length === 0) return res.status(400).json({ error: "No part numbers found. Make sure your CSV has a Part Number column." });
+    if (partNumbers.length === 0) return res.status(400).json({ error: "No part numbers found." });
 
     console.log("Excel BOM:", partNumbers.length, "parts");
-
     var results = [];
     var limit = Math.min(partNumbers.length, 15);
 
@@ -632,7 +920,6 @@ app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async fu
           row.description = partInfo.description;
           row.category = partInfo.categoryName;
           row.keySpecs = partInfo.specsText.substring(0, 100);
-
           if (!partInfo.isPassive) {
             var altSys = buildAltSystem(partInfo);
             var altRes = await callAI(altSys, [{ role: "user", content: "Find alternatives for " + pn }], 2000);
