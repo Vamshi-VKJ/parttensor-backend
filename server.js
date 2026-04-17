@@ -220,9 +220,6 @@ function buildParametricFilters(categoryKey, specs) {
   return filters;
 }
 
-
-
-
 async function searchByCategory(categoryKey, specs, limit) {
   try {
     var fetch = (await import("node-fetch")).default;
@@ -230,21 +227,76 @@ async function searchByCategory(categoryKey, specs, limit) {
     if (!token) return null;
     var cat = DK_CATEGORIES[categoryKey];
     if (!cat) return null;
+    limit = limit || 50;
+
+    // Build parametric filters
+    var filters = buildParametricFilters(categoryKey, specs);
+    console.log("Parametric filters for", categoryKey, ":", JSON.stringify(filters));
+
     var body = {
-     Keywords: cat.name,
-     Limit: limit || 50,
-     Offset: 0,
-     FilterOptionsRequest: {
-     InStock: true,
-     MarketplaceProducts: false,
-     ParametricFilters: buildParametricFilters(categoryKey, specs),
+      CategoryId: cat.id,
+      FilterOptionsRequest: {
+        InStock: true,
+        MarketplaceProducts: false,
+        ParametricFilters: filters,
       },
-     CategoryFilter: { CategoryId: cat.id },
-     SortOptions: { Field: "QuantityAvailable", SortOrder: "Descending" },
-     };
+      Limit: limit,
+      Offset: 0,
+      SortOptions: {
+        Field: "QuantityAvailable",
+        SortOrder: "Descending",
+      },
+    };
 
+    console.log("DigiKey parametric search:", cat.name, "id=" + cat.id);
 
-    console.log("DigiKey category search:", cat.name, "id=" + cat.id);
+    var res = await fetch("https://api.digikey.com/products/v4/search/parametric", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID,
+        "X-DIGIKEY-Locale-Site": "US",
+        "X-DIGIKEY-Locale-Language": "en",
+        "X-DIGIKEY-Locale-Currency": "USD",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      var errBody = await res.text();
+      console.error("DigiKey parametric search failed:", res.status, errBody.substring(0, 300));
+      // Fallback to keyword search without filters
+      return await searchByCategoryKeyword(categoryKey, limit);
+    }
+
+    var data = await res.json();
+    var products = data.Products || [];
+    console.log("DigiKey returned", products.length, "products for", cat.name);
+    return products;
+
+  } catch (e) {
+    console.error("DigiKey category search error:", e.message);
+    return null;
+  }
+}
+
+// Fallback keyword search when parametric fails
+async function searchByCategoryKeyword(categoryKey, limit) {
+  try {
+    var fetch = (await import("node-fetch")).default;
+    var token = await getDigikeyToken();
+    if (!token) return null;
+    var cat = DK_CATEGORIES[categoryKey];
+    if (!cat) return null;
+    var body = {
+      Keywords: cat.name,
+      Limit: limit || 50,
+      Offset: 0,
+      FilterOptionsRequest: { InStock: true, MarketplaceProducts: false },
+      CategoryFilter: { CategoryId: cat.id },
+      SortOptions: { Field: "QuantityAvailable", SortOrder: "Descending" },
+    };
     var res = await fetch("https://api.digikey.com/products/v4/search/keyword", {
       method: "POST",
       headers: {
@@ -257,28 +309,12 @@ async function searchByCategory(categoryKey, specs, limit) {
       },
       body: JSON.stringify(body),
     });
-    if (!res.ok) {
-    var errBody = await res.text();
-    console.error("DigiKey search failed:", res.status, errBody.substring(0, 500));
-    return null;
-                 }
+    if (!res.ok) return null;
     var data = await res.json();
-    var products = data.Products || [];
-    console.log("DigiKey returned", products.length, "products for", cat.name);
-    if (data.AppliedParametricFiltersDto) console.log("Applied filters:", JSON.stringify(data.AppliedParametricFiltersDto).substring(0, 300));
-    if (data.FilterOptions && data.FilterOptions.ParametricFilters) {
-  var vdsFilter = data.FilterOptions.ParametricFilters.find(function(f) { return f.ParameterId === 2068; });
-  if (vdsFilter) console.log("Available Vds values sample:", JSON.stringify((vdsFilter.FilterValues || []).slice(0, 5)));
-    }
-
-    console.log("DigiKey raw response keys:", Object.keys(data));
-    if (products.length === 0) console.log("DigiKey full response:", JSON.stringify(data).substring(0, 500));
-    return products;
-  } catch (e) {
-    console.error("DigiKey category search error:", e.message);
-    return null;
-  }
+    return data.Products || [];
+  } catch (e) { return null; }
 }
+
 
 async function lookupDigikey(mpn) {
   try {
