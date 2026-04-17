@@ -664,7 +664,7 @@ var INTENT_SYSTEM = "You classify hardware engineering queries. Consider full co
 
 var ENGINEERING_SYSTEM = "You are PartTensor, a senior hardware application engineer AI. Help engineers with circuit design, calculations, and troubleshooting. Be direct, technical and precise. Use real formulas and examples. Format with **bold headers** and - bullet points.";
 
-var ENRICHMENT_SYSTEM = "You are a senior application engineer. You are given real parts from DigiKey. Your job is ONLY to rank them and add context. DO NOT change part numbers or specs. Respond ONLY with raw JSON starting with {: {\"category\":\"N-Channel MOSFET\",\"interpretation\":\"one sentence\",\"designTip\":\"tip\",\"rankedResults\":[{\"partNumber\":\"IRF540NPBF\",\"rank\":\"top\",\"aeComment\":\"reason\",\"caution\":null,\"applications\":[\"Motor Drive\"]}]}";
+var ENRICHMENT_SYSTEM = "You are a senior application engineer. You are given part numbers from DigiKey with their stock levels. Use your knowledge to verify if each part meets the required specs. Rank parts that meet specs first. Add a caution for any part that does not meet the required voltage or current. DO NOT change part numbers. Respond ONLY with raw JSON starting with {: {\"category\":\"N-Channel MOSFET\",\"interpretation\":\"one sentence\",\"designTip\":\"tip\",\"rankedResults\":[{\"partNumber\":\"IRF540NPBF\",\"rank\":\"top\",\"aeComment\":\"Meets 100V/30A requirements. Good for motor drive.\",\"caution\":null,\"applications\":[\"Motor Drive\"]}]}";
 
 var BOM_SYSTEM = "You are a senior hardware application engineer. Generate a smart Bill of Materials. Only critical components: MOSFETs, ICs, drivers, specialized inductors, electrolytic caps, current sense resistors, crystals, connectors, optocouplers, diodes, sensors. NO generic resistors, 100nF caps, generic LEDs. Use full Digi-Key part numbers. 5 keySpecs per part. Respond ONLY with raw JSON starting with {: {\"bomItems\":[{\"id\":1,\"function\":\"Gate Driver\",\"partNumber\":\"IR2184SPBF\",\"manufacturer\":\"Infineon\",\"description\":\"one line\",\"category\":\"IC\",\"quantity\":1,\"keySpecs\":\"600V 2A SO-8\",\"package\":\"SO-8\",\"priority\":\"critical\",\"unitPrice\":\"$1.20\",\"notes\":null}],\"projectName\":\"name\",\"description\":\"sentence\",\"voltage\":\"V\",\"power\":\"W\",\"designNotes\":\"notes\",\"totalEstimate\":\"$15-25\"}";
 
@@ -895,25 +895,9 @@ app.post("/api/chat", async function(req, res) {
       return b.dkStock - a.dkStock;
     });
 
-    // Fetch full details for top 10 candidates to get real specs
-var candidates = filteredParts.slice(0, 5);
-console.log("Fetching details for", candidates.length, "candidates...");
-var detailPromises = candidates.map(function(p) { return fetchProductDetails(p.partNumber); });
-var detailResults = await Promise.all(detailPromises);
+    var topParts = filteredParts.slice(0, 4);
+    console.log("Top parts:", topParts.map(function(p) { return p.partNumber + "(" + p.dkStock + ")"; }).join(", "));
 
-for (var di = 0; di < candidates.length; di++) {
-  var fp = detailResults[di];
-  if (fp && fp.Parameters && fp.Parameters.length > 0) {
-    var rs = extractSpecsFromParameters(fp.Parameters);
-    candidates[di]._specs = rs;
-    candidates[di].keySpecs = buildKeySpecs(fp.Parameters, rs, componentType, fp);
-    console.log("  " + candidates[di].partNumber + " Vds=" + rs.voltage + "V Id=" + rs.current + "A");
-    if (!rs.voltage && fp.Parameters) {
-    console.log("  RAW PARAMS:", JSON.stringify(fp.Parameters.slice(0, 5)));
-}
-
-  }
-}
 
 // Now filter with real specs
 var topParts = candidates.filter(function(p) {
@@ -955,7 +939,7 @@ var mouserResults = await Promise.all(mouserPromises);
       stockDataMap[mpn] = sdata2;
     }
 
-    var enrichPrompt = "User asked: " + message + "\n\nReal DigiKey results (category: " + (DK_CATEGORIES[componentType] && DK_CATEGORIES[componentType].name) + "):\n" + topParts.map(function(p, idx) { return (idx + 1) + ". " + p.partNumber + " (" + p.manufacturer + ") DK Stock: " + p.dkStock + " Specs: " + p.keySpecs.map(function(s) { return s.label + "=" + s.value + s.unit; }).join(", "); }).join("\n");
+    var enrichPrompt = "User asked: " + message + "\n\nRequired: voltage>=" + (requiredSpecs.voltage || "any") + "V current>=" + (requiredSpecs.current || "any") + "A\n\nParts from DigiKey (sorted by stock):\n" + topParts.map(function(p, idx) { return (idx + 1) + ". " + p.partNumber + " (" + p.manufacturer + ") Stock: " + p.dkStock; }).join("\n") + "\n\nFor each part use your knowledge to verify if it meets the required specs. Rank parts meeting specs as top/good. Parts not meeting specs get rank=alternative and a caution note explaining the spec mismatch.";
     var enrichResult = await callAI(ENRICHMENT_SYSTEM, [{ role: "user", content: enrichPrompt }], 1500);
     var category = (DK_CATEGORIES[componentType] && DK_CATEGORIES[componentType].name) || componentType;
     var interpretation = "Real-time DigiKey results";
