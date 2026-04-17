@@ -416,7 +416,8 @@ app.post("/api/chat", async function(req, res) {
     console.log("\n[CHAT]", message.substring(0, 80));
 
     // STEP 1: CLASSIFY INTENT
-    var intentInput = JSON.stringify({ message: message, historyLength: history.length, isCorrection: isCorrection });
+    var contextSummary = history.slice(-4).map(function(m) { return m.role + ": " + (m.content || "").substring(0, 100); }).join("\n");
+    var intentInput = "Recent conversation:\n" + contextSummary + "\n\nNew message: " + message;
     var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 200);
     var intent = "part_search";
     var needsMoreInfo = false;
