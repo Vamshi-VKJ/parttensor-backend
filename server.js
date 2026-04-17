@@ -740,6 +740,10 @@ for (var di = 0; di < topParts.length; di++) {
     topParts[di]._specs = realSpecs;
     topParts[di].keySpecs = buildKeySpecs(fullProduct.Parameters, realSpecs, componentType, fullProduct);
     console.log("  Full specs for", topParts[di].partNumber, ":", JSON.stringify(realSpecs));
+     if (fullProduct && fullProduct.Parameters) {
+     console.log("  Raw params:", JSON.stringify(fullProduct.Parameters.slice(0, 10)));
+}
+
   }
 }
 
