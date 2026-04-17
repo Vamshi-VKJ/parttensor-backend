@@ -641,7 +641,7 @@ app.post("/api/chat", async function(req, res) {
       return res.json({ text: unkResult.text || "I could not identify the component type. Please specify: MOSFET, op-amp, capacitor, inductor, LDO, diode, etc.", intent: intent, mode: "text" });
     }
 
-    var dkProducts = await searchByCategory(componentType, 60);
+    var dkProducts = await searchByCategory(componentType, 50);
     if (!dkProducts || dkProducts.length === 0) {
       return res.json({ text: "DigiKey returned no results for " + (DK_CATEGORIES[componentType] && DK_CATEGORIES[componentType].name) + ". Try relaxing the requirements.", intent: intent, mode: "text" });
     }
