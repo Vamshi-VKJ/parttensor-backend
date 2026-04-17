@@ -1,15 +1,15 @@
-const express = require(“express”);
-const cors = require(“cors”);
-require(“dotenv”).config();
+const express = require("express");
+const cors = require("cors");
+require("dotenv").config();
 
-console.log(”=== PartTensor Backend Starting ===”);
-console.log(“Anthropic:”, process.env.ANTHROPIC_API_KEY ? “OK” : “MISSING”);
-console.log(“Nexar:”, process.env.NEXAR_CLIENT_ID ? “OK” : “MISSING”);
-console.log(“Mouser:”, process.env.MOUSER_API_KEY ? “OK” : “MISSING”);
+console.log("=== PartTensor Backend Starting ===");
+console.log("Anthropic:", process.env.ANTHROPIC_API_KEY ? "OK" : "MISSING");
+console.log("Nexar:", process.env.NEXAR_CLIENT_ID ? "OK" : "MISSING");
+console.log("Mouser:", process.env.MOUSER_API_KEY ? "OK" : "MISSING");
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: “10mb” }));
+app.use(express.json({ limit: "10mb" }));
 
 var aiCache = {};
 var stockCache = {};
@@ -34,13 +34,13 @@ var nexarTokenExpiry = null;
 
 async function getNexarToken() {
 if (nexarToken && nexarTokenExpiry && Date.now() < nexarTokenExpiry) return nexarToken;
-var fetch = (await import(“node-fetch”)).default;
+var fetch = (await import("node-fetch")).default;
 try {
-var res = await fetch(“https://identity.nexar.com/connect/token”, {
-method: “POST”,
-headers: { “Content-Type”: “application/x-www-form-urlencoded” },
+var res = await fetch("https://identity.nexar.com/connect/token", {
+method: "POST",
+headers: { "Content-Type": "application/x-www-form-urlencoded" },
 body: new URLSearchParams({
-grant_type: “client_credentials”,
+grant_type: "client_credentials",
 client_id: process.env.NEXAR_CLIENT_ID,
 client_secret: process.env.NEXAR_CLIENT_SECRET,
 }),
@@ -49,13 +49,13 @@ var data = await res.json();
 if (data.access_token) {
 nexarToken = data.access_token;
 nexarTokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
-console.log(“Nexar token refreshed”);
+console.log("Nexar token refreshed");
 return nexarToken;
 }
-console.error(“Nexar token error:”, JSON.stringify(data).substring(0, 200));
+console.error("Nexar token error:", JSON.stringify(data).substring(0, 200));
 return null;
 } catch (e) {
-console.error(“Nexar token failed:”, e.message);
+console.error("Nexar token failed:", e.message);
 return null;
 }
 }
@@ -66,9 +66,9 @@ return null;
 // =============================================
 async function searchNexar(componentType, requiredSpecs) {
 try {
-var fetch = (await import(“node-fetch”)).default;
+var fetch = (await import("node-fetch")).default;
 var token = await getNexarToken();
-if (!token) { console.error(“No Nexar token”); return null; }
+if (!token) { console.error("No Nexar token"); return null; }
 
 ```
 // Build spec filters based on component type
@@ -132,7 +132,7 @@ return results;
 ```
 
 } catch (e) {
-console.error(“Nexar search error:”, e.message);
+console.error("Nexar search error:", e.message);
 return null;
 }
 }
@@ -146,28 +146,28 @@ var filters = {};
 
 // Category mapping
 var categoryMap = {
-mosfet_n:         “MOSFETs”,
-mosfet_p:         “MOSFETs”,
-igbt:             “IGBTs”,
-bjt_npn:          “Transistors”,
-bjt_pnp:          “Transistors”,
-diode_rectifier:  “Diodes”,
-diode_schottky:   “Schottky Diodes”,
-diode_zener:      “Zener Diodes”,
-opamp:            “Op Amps”,
-comparator:       “Comparators”,
-ldo:              “LDO Regulators”,
-dcdc_buck:        “DC-DC Converters”,
-gate_driver:      “Gate Drivers”,
-voltage_ref:      “Voltage References”,
-cap_ceramic:      “Ceramic Capacitors”,
-cap_electrolytic: “Electrolytic Capacitors”,
-cap_tantalum:     “Tantalum Capacitors”,
-cap_film:         “Film Capacitors”,
-inductor:         “Inductors”,
-resistor_smd:     “Chip Resistors”,
-current_sensor:   “Current Sensors”,
-temp_sensor:      “Temperature Sensors”,
+mosfet_n:         "MOSFETs",
+mosfet_p:         "MOSFETs",
+igbt:             "IGBTs",
+bjt_npn:          "Transistors",
+bjt_pnp:          "Transistors",
+diode_rectifier:  "Diodes",
+diode_schottky:   "Schottky Diodes",
+diode_zener:      "Zener Diodes",
+opamp:            "Op Amps",
+comparator:       "Comparators",
+ldo:              "LDO Regulators",
+dcdc_buck:        "DC-DC Converters",
+gate_driver:      "Gate Drivers",
+voltage_ref:      "Voltage References",
+cap_ceramic:      "Ceramic Capacitors",
+cap_electrolytic: "Electrolytic Capacitors",
+cap_tantalum:     "Tantalum Capacitors",
+cap_film:         "Film Capacitors",
+inductor:         "Inductors",
+resistor_smd:     "Chip Resistors",
+current_sensor:   "Current Sensors",
+temp_sensor:      "Temperature Sensors",
 };
 
 if (categoryMap[componentType]) {
@@ -175,34 +175,34 @@ filters.categories = [categoryMap[componentType]];
 }
 
 // Add subcategory for N vs P channel MOSFET
-if (componentType === “mosfet_n”) filters.q = “N-Channel”;
-if (componentType === “mosfet_p”) filters.q = “P-Channel”;
-if (componentType === “bjt_npn”) filters.q = “NPN”;
-if (componentType === “bjt_pnp”) filters.q = “PNP”;
+if (componentType === "mosfet_n") filters.q = "N-Channel";
+if (componentType === "mosfet_p") filters.q = "P-Channel";
+if (componentType === "bjt_npn") filters.q = "NPN";
+if (componentType === "bjt_pnp") filters.q = "PNP";
 
 // Spec filters using Nexar attribute shortnames
 var specs_filter = [];
 
-if (componentType === “mosfet_n” || componentType === “mosfet_p” || componentType === “igbt”) {
-if (specs.voltage) specs_filter.push({ shortname: “vds”, min: String(specs.voltage) });
-if (specs.current) specs_filter.push({ shortname: “id”, min: String(specs.current) });
-} else if (componentType === “bjt_npn” || componentType === “bjt_pnp”) {
-if (specs.voltage) specs_filter.push({ shortname: “vceo”, min: String(specs.voltage) });
-if (specs.current) specs_filter.push({ shortname: “ic”, min: String(specs.current) });
-} else if (componentType === “diode_rectifier” || componentType === “diode_schottky”) {
-if (specs.voltage) specs_filter.push({ shortname: “vr”, min: String(specs.voltage) });
-if (specs.current) specs_filter.push({ shortname: “if”, min: String(specs.current) });
-} else if (componentType === “opamp”) {
-if (specs.gbwMHz) specs_filter.push({ shortname: “gbp”, min: String(specs.gbwMHz) });
-} else if (componentType === “ldo”) {
-if (specs.current) specs_filter.push({ shortname: “iout”, min: String(specs.current) });
-if (specs.outputV) specs_filter.push({ shortname: “vout”, min: String(specs.outputV * 0.95), max: String(specs.outputV * 1.05) });
-} else if (componentType === “cap_ceramic” || componentType === “cap_electrolytic” || componentType === “cap_tantalum” || componentType === “cap_film”) {
-if (specs.voltage) specs_filter.push({ shortname: “vrated”, min: String(specs.voltage) });
-if (specs.capacitanceUF) specs_filter.push({ shortname: “capacitance”, min: String(specs.capacitanceUF * 0.7), max: String(specs.capacitanceUF * 1.3) });
-} else if (componentType === “inductor”) {
-if (specs.current) specs_filter.push({ shortname: “irated”, min: String(specs.current) });
-if (specs.inductanceUH) specs_filter.push({ shortname: “inductance”, min: String(specs.inductanceUH * 0.75), max: String(specs.inductanceUH * 1.25) });
+if (componentType === "mosfet_n" || componentType === "mosfet_p" || componentType === "igbt") {
+if (specs.voltage) specs_filter.push({ shortname: "vds", min: String(specs.voltage) });
+if (specs.current) specs_filter.push({ shortname: "id", min: String(specs.current) });
+} else if (componentType === "bjt_npn" || componentType === "bjt_pnp") {
+if (specs.voltage) specs_filter.push({ shortname: "vceo", min: String(specs.voltage) });
+if (specs.current) specs_filter.push({ shortname: "ic", min: String(specs.current) });
+} else if (componentType === "diode_rectifier" || componentType === "diode_schottky") {
+if (specs.voltage) specs_filter.push({ shortname: "vr", min: String(specs.voltage) });
+if (specs.current) specs_filter.push({ shortname: "if", min: String(specs.current) });
+} else if (componentType === "opamp") {
+if (specs.gbwMHz) specs_filter.push({ shortname: "gbp", min: String(specs.gbwMHz) });
+} else if (componentType === "ldo") {
+if (specs.current) specs_filter.push({ shortname: "iout", min: String(specs.current) });
+if (specs.outputV) specs_filter.push({ shortname: "vout", min: String(specs.outputV * 0.95), max: String(specs.outputV * 1.05) });
+} else if (componentType === "cap_ceramic" || componentType === "cap_electrolytic" || componentType === "cap_tantalum" || componentType === "cap_film") {
+if (specs.voltage) specs_filter.push({ shortname: "vrated", min: String(specs.voltage) });
+if (specs.capacitanceUF) specs_filter.push({ shortname: "capacitance", min: String(specs.capacitanceUF * 0.7), max: String(specs.capacitanceUF * 1.3) });
+} else if (componentType === "inductor") {
+if (specs.current) specs_filter.push({ shortname: "irated", min: String(specs.current) });
+if (specs.inductanceUH) specs_filter.push({ shortname: "inductance", min: String(specs.inductanceUH * 0.75), max: String(specs.inductanceUH * 1.25) });
 }
 
 if (specs_filter.length > 0) filters.specs = specs_filter;
@@ -215,9 +215,9 @@ return filters;
 // =============================================
 function convertNexarResult(result, componentType) {
 var part = result.part || {};
-var mpn = part.mpn || “”;
-var manufacturer = (part.manufacturer && part.manufacturer.name) || “”;
-var description = part.shortDescription || “”;
+var mpn = part.mpn || "";
+var manufacturer = (part.manufacturer && part.manufacturer.name) || "";
+var description = part.shortDescription || "";
 var specsArr = part.specs || [];
 var sellers = part.sellers || [];
 
@@ -225,100 +225,100 @@ var sellers = part.sellers || [];
 var specMap = {};
 for (var i = 0; i < specsArr.length; i++) {
 var attr = specsArr[i].attribute || {};
-var shortname = (attr.shortname || “”).toLowerCase();
-var name = (attr.name || “”).toLowerCase();
-var val = specsArr[i].displayValue || “”;
+var shortname = (attr.shortname || "").toLowerCase();
+var name = (attr.name || "").toLowerCase();
+var val = specsArr[i].displayValue || "";
 specMap[shortname] = val;
 specMap[name] = val;
 }
 
 // Build key specs based on component type
 var keySpecs = [];
-var pkg = specMap[“case_package”] || specMap[“package”] || specMap[“case”] || “”;
+var pkg = specMap["case_package"] || specMap["package"] || specMap["case"] || "";
 
-if (componentType === “mosfet_n” || componentType === “mosfet_p” || componentType === “igbt”) {
-if (specMap[“vds”]) keySpecs.push({ label: “VDS”, value: specMap[“vds”].replace(/[^0-9.]/g, “”), unit: “V” });
-if (specMap[“id”]) keySpecs.push({ label: “ID”, value: specMap[“id”].replace(/[^0-9.]/g, “”), unit: “A” });
-if (specMap[“rds_on”] || specMap[“rdson”]) keySpecs.push({ label: “RDS(on)”, value: (specMap[“rds_on”] || specMap[“rdson”]).replace(/[^0-9.]/g, “”), unit: “mOhm” });
-if (specMap[“pd”]) keySpecs.push({ label: “Pd”, value: specMap[“pd”].replace(/[^0-9.]/g, “”), unit: “W” });
-if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
-} else if (componentType === “bjt_npn” || componentType === “bjt_pnp”) {
-if (specMap[“vceo”]) keySpecs.push({ label: “Vce”, value: specMap[“vceo”].replace(/[^0-9.]/g, “”), unit: “V” });
-if (specMap[“ic”]) keySpecs.push({ label: “Ic”, value: specMap[“ic”].replace(/[^0-9.]/g, “”), unit: “A” });
-if (specMap[“pd”]) keySpecs.push({ label: “Pd”, value: specMap[“pd”].replace(/[^0-9.]/g, “”), unit: “W” });
-if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
-} else if (componentType === “diode_rectifier” || componentType === “diode_schottky”) {
-if (specMap[“vr”]) keySpecs.push({ label: “Vrrm”, value: specMap[“vr”].replace(/[^0-9.]/g, “”), unit: “V” });
-if (specMap[“if”]) keySpecs.push({ label: “Io”, value: specMap[“if”].replace(/[^0-9.]/g, “”), unit: “A” });
-if (specMap[“vf”]) keySpecs.push({ label: “Vf”, value: specMap[“vf”].replace(/[^0-9.]/g, “”), unit: “V” });
-if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
-} else if (componentType === “opamp”) {
-if (specMap[“gbp”] || specMap[“gbw”]) keySpecs.push({ label: “GBW”, value: (specMap[“gbp”] || specMap[“gbw”]).replace(/[^0-9.]/g, “”), unit: “MHz” });
-if (specMap[“vs_max”]) keySpecs.push({ label: “Vcc Max”, value: specMap[“vs_max”].replace(/[^0-9.]/g, “”), unit: “V” });
-if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
-} else if (componentType === “ldo”) {
-if (specMap[“vout”]) keySpecs.push({ label: “Vout”, value: specMap[“vout”].replace(/[^0-9.]/g, “”), unit: “V” });
-if (specMap[“iout”]) keySpecs.push({ label: “Iout”, value: specMap[“iout”].replace(/[^0-9.]/g, “”), unit: “A” });
-if (specMap[“vin_max”]) keySpecs.push({ label: “Vin Max”, value: specMap[“vin_max”].replace(/[^0-9.]/g, “”), unit: “V” });
-if (specMap[“vdo”]) keySpecs.push({ label: “Dropout”, value: specMap[“vdo”].replace(/[^0-9.]/g, “”), unit: “mV” });
-if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
-} else if (componentType && componentType.startsWith(“cap”)) {
-if (specMap[“capacitance”]) keySpecs.push({ label: “Cap”, value: specMap[“capacitance”].replace(/[^0-9.]/g, “”), unit: “uF” });
-if (specMap[“vrated”]) keySpecs.push({ label: “Voltage”, value: specMap[“vrated”].replace(/[^0-9.]/g, “”), unit: “V” });
-if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
-} else if (componentType === “inductor”) {
-if (specMap[“inductance”]) keySpecs.push({ label: “L”, value: specMap[“inductance”].replace(/[^0-9.]/g, “”), unit: “uH” });
-if (specMap[“irated”]) keySpecs.push({ label: “Irated”, value: specMap[“irated”].replace(/[^0-9.]/g, “”), unit: “A” });
-if (specMap[“dcr”]) keySpecs.push({ label: “DCR”, value: specMap[“dcr”].replace(/[^0-9.]/g, “”), unit: “mOhm” });
-if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
+if (componentType === "mosfet_n" || componentType === "mosfet_p" || componentType === "igbt") {
+if (specMap["vds"]) keySpecs.push({ label: "VDS", value: specMap["vds"].replace(/[^0-9.]/g, ""), unit: "V" });
+if (specMap["id"]) keySpecs.push({ label: "ID", value: specMap["id"].replace(/[^0-9.]/g, ""), unit: "A" });
+if (specMap["rds_on"] || specMap["rdson"]) keySpecs.push({ label: "RDS(on)", value: (specMap["rds_on"] || specMap["rdson"]).replace(/[^0-9.]/g, ""), unit: "mOhm" });
+if (specMap["pd"]) keySpecs.push({ label: "Pd", value: specMap["pd"].replace(/[^0-9.]/g, ""), unit: "W" });
+if (pkg) keySpecs.push({ label: "Package", value: pkg, unit: "" });
+} else if (componentType === "bjt_npn" || componentType === "bjt_pnp") {
+if (specMap["vceo"]) keySpecs.push({ label: "Vce", value: specMap["vceo"].replace(/[^0-9.]/g, ""), unit: "V" });
+if (specMap["ic"]) keySpecs.push({ label: "Ic", value: specMap["ic"].replace(/[^0-9.]/g, ""), unit: "A" });
+if (specMap["pd"]) keySpecs.push({ label: "Pd", value: specMap["pd"].replace(/[^0-9.]/g, ""), unit: "W" });
+if (pkg) keySpecs.push({ label: "Package", value: pkg, unit: "" });
+} else if (componentType === "diode_rectifier" || componentType === "diode_schottky") {
+if (specMap["vr"]) keySpecs.push({ label: "Vrrm", value: specMap["vr"].replace(/[^0-9.]/g, ""), unit: "V" });
+if (specMap["if"]) keySpecs.push({ label: "Io", value: specMap["if"].replace(/[^0-9.]/g, ""), unit: "A" });
+if (specMap["vf"]) keySpecs.push({ label: "Vf", value: specMap["vf"].replace(/[^0-9.]/g, ""), unit: "V" });
+if (pkg) keySpecs.push({ label: "Package", value: pkg, unit: "" });
+} else if (componentType === "opamp") {
+if (specMap["gbp"] || specMap["gbw"]) keySpecs.push({ label: "GBW", value: (specMap["gbp"] || specMap["gbw"]).replace(/[^0-9.]/g, ""), unit: "MHz" });
+if (specMap["vs_max"]) keySpecs.push({ label: "Vcc Max", value: specMap["vs_max"].replace(/[^0-9.]/g, ""), unit: "V" });
+if (pkg) keySpecs.push({ label: "Package", value: pkg, unit: "" });
+} else if (componentType === "ldo") {
+if (specMap["vout"]) keySpecs.push({ label: "Vout", value: specMap["vout"].replace(/[^0-9.]/g, ""), unit: "V" });
+if (specMap["iout"]) keySpecs.push({ label: "Iout", value: specMap["iout"].replace(/[^0-9.]/g, ""), unit: "A" });
+if (specMap["vin_max"]) keySpecs.push({ label: "Vin Max", value: specMap["vin_max"].replace(/[^0-9.]/g, ""), unit: "V" });
+if (specMap["vdo"]) keySpecs.push({ label: "Dropout", value: specMap["vdo"].replace(/[^0-9.]/g, ""), unit: "mV" });
+if (pkg) keySpecs.push({ label: "Package", value: pkg, unit: "" });
+} else if (componentType && componentType.startsWith("cap")) {
+if (specMap["capacitance"]) keySpecs.push({ label: "Cap", value: specMap["capacitance"].replace(/[^0-9.]/g, ""), unit: "uF" });
+if (specMap["vrated"]) keySpecs.push({ label: "Voltage", value: specMap["vrated"].replace(/[^0-9.]/g, ""), unit: "V" });
+if (pkg) keySpecs.push({ label: "Package", value: pkg, unit: "" });
+} else if (componentType === "inductor") {
+if (specMap["inductance"]) keySpecs.push({ label: "L", value: specMap["inductance"].replace(/[^0-9.]/g, ""), unit: "uH" });
+if (specMap["irated"]) keySpecs.push({ label: "Irated", value: specMap["irated"].replace(/[^0-9.]/g, ""), unit: "A" });
+if (specMap["dcr"]) keySpecs.push({ label: "DCR", value: specMap["dcr"].replace(/[^0-9.]/g, ""), unit: "mOhm" });
+if (pkg) keySpecs.push({ label: "Package", value: pkg, unit: "" });
 } else {
 // Generic - take first 4 specs
 var count = 0;
 for (var si = 0; si < specsArr.length && count < 4; si++) {
-var sv = specsArr[si].displayValue || “”;
-if (sv && sv !== “None”) { keySpecs.push({ label: (specsArr[si].attribute && specsArr[si].attribute.name) || “”, value: sv.replace(/[^0-9.]/g, “”), unit: “” }); count++; }
+var sv = specsArr[si].displayValue || "";
+if (sv && sv !== "None") { keySpecs.push({ label: (specsArr[si].attribute && specsArr[si].attribute.name) || "", value: sv.replace(/[^0-9.]/g, ""), unit: "" }); count++; }
 }
-if (pkg) keySpecs.push({ label: “Package”, value: pkg, unit: “” });
+if (pkg) keySpecs.push({ label: "Package", value: pkg, unit: "" });
 }
 
 // Extract stock and price from sellers
-var dkStock = 0, dkPrice = null, dkUrl = “”;
-var mouserStock = 0, mouserPrice = null, mouserUrl = “”;
+var dkStock = 0, dkPrice = null, dkUrl = "";
+var mouserStock = 0, mouserPrice = null, mouserUrl = "";
 var totalStock = 0;
 
 for (var si2 = 0; si2 < sellers.length; si2++) {
 var seller = sellers[si2];
-var sellerName = (seller.company && seller.company.name) || “”;
+var sellerName = (seller.company && seller.company.name) || "";
 var offers = seller.offers || [];
 for (var oi = 0; oi < offers.length; oi++) {
 var offer = offers[oi];
 var inv = offer.inventoryLevel || 0;
 var price = offer.prices && offer.prices[0] && offer.prices[0].price;
-var url = offer.clickUrl || “”;
+var url = offer.clickUrl || "";
 totalStock += inv;
-if (sellerName.toLowerCase().includes(“digi-key”) || sellerName.toLowerCase().includes(“digikey”)) {
-dkStock += inv; if (!dkPrice && price) dkPrice = “$” + parseFloat(price).toFixed(3); dkUrl = url;
-} else if (sellerName.toLowerCase().includes(“mouser”)) {
-mouserStock += inv; if (!mouserPrice && price) mouserPrice = “$” + parseFloat(price).toFixed(3); mouserUrl = url;
+if (sellerName.toLowerCase().includes("digi-key") || sellerName.toLowerCase().includes("digikey")) {
+dkStock += inv; if (!dkPrice && price) dkPrice = "$" + parseFloat(price).toFixed(3); dkUrl = url;
+} else if (sellerName.toLowerCase().includes("mouser")) {
+mouserStock += inv; if (!mouserPrice && price) mouserPrice = "$" + parseFloat(price).toFixed(3); mouserUrl = url;
 }
 }
 }
 
 var bestPrice = dkPrice || mouserPrice;
-var bestPriceSource = dkPrice ? “Digi-Key” : mouserPrice ? “Mouser” : null;
+var bestPriceSource = dkPrice ? "Digi-Key" : mouserPrice ? "Mouser" : null;
 
 return {
 partNumber: mpn,
 manufacturer: manufacturer,
-type: (componentType && componentType.replace(/_/g, “ “).toUpperCase()) || description.split(” “).slice(0, 3).join(” “),
+type: (componentType && componentType.replace(/_/g, " ").toUpperCase()) || description.split(" ").slice(0, 3).join(" "),
 description: description,
 package: pkg,
 keySpecs: keySpecs,
 dkStock: dkStock,
 dkPrice: dkPrice,
 dkUrl: dkUrl,
-rank: “alternative”,
-aeComment: “”,
+rank: "alternative",
+aeComment: "",
 caution: null,
 applications: [],
 stockData: {
@@ -328,7 +328,7 @@ bestPrice: bestPrice,
 bestPriceSource: bestPriceSource,
 digikey: dkStock > 0 ? { found: true, stock: dkStock, price: dkPrice, url: dkUrl } : null,
 mouser: mouserStock > 0 ? { found: true, stock: mouserStock, price: mouserPrice, url: mouserUrl } : null,
-octopartUrl: “https://octopart.com/search?q=” + encodeURIComponent(mpn),
+octopartUrl: "https://octopart.com/search?q=" + encodeURIComponent(mpn),
 },
 };
 }
@@ -338,7 +338,7 @@ octopartUrl: “https://octopart.com/search?q=” + encodeURIComponent(mpn),
 // =============================================
 async function lookupNexarPart(mpn) {
 try {
-var fetch = (await import(“node-fetch”)).default;
+var fetch = (await import("node-fetch")).default;
 var token = await getNexarToken();
 if (!token) return null;
 
@@ -376,7 +376,7 @@ if (results.length === 0) return null;
 return results[0].part;
 ```
 
-} catch (e) { console.error(“Nexar lookup failed for “ + mpn + “:”, e.message); return null; }
+} catch (e) { console.error("Nexar lookup failed for " + mpn + ":", e.message); return null; }
 }
 
 // =============================================
@@ -384,33 +384,33 @@ return results[0].part;
 // =============================================
 function detectComponentType(query) {
 var q = query.toLowerCase();
-q = q.replace(/for\s+(motor|pfc|inverter|converter|charger|driver|controller|amplifier|supply|circuit|switching|drive|load|battery|solar|power)[^,]*/g, “”);
-q = q.replace(/in\s+(motor|pfc|inverter|converter|charger|driver|controller)[^,]*/g, “”);
-if (q.includes(“igbt”)) return “igbt”;
-if (q.includes(“mosfet”) || q.includes(” fet”) || q.includes(“nmos”) || q.includes(“pmos”)) {
-if (q.includes(“p-channel”) || q.includes(“p channel”) || q.includes(“pmos”)) return “mosfet_p”;
-return “mosfet_n”;
+q = q.replace(/for\s+(motor|pfc|inverter|converter|charger|driver|controller|amplifier|supply|circuit|switching|drive|load|battery|solar|power)[^,]*/g, "");
+q = q.replace(/in\s+(motor|pfc|inverter|converter|charger|driver|controller)[^,]*/g, "");
+if (q.includes("igbt")) return "igbt";
+if (q.includes("mosfet") || q.includes(" fet") || q.includes("nmos") || q.includes("pmos")) {
+if (q.includes("p-channel") || q.includes("p channel") || q.includes("pmos")) return "mosfet_p";
+return "mosfet_n";
 }
-if (q.includes(“pnp”)) return “bjt_pnp”;
-if (q.includes(“npn”) || (q.includes(“bjt”) && !q.includes(“pnp”)) || (q.includes(“transistor”) && !q.includes(“mosfet”))) return “bjt_npn”;
-if (q.includes(“schottky”)) return “diode_schottky”;
-if (q.includes(“zener”)) return “diode_zener”;
-if (q.includes(“diode”) || q.includes(“rectifier”)) return “diode_rectifier”;
-if (q.includes(“gate driver”) || q.includes(“gate drive ic”)) return “gate_driver”;
-if (q.includes(“op-amp”) || q.includes(“opamp”) || q.includes(“op amp”) || q.includes(“operational amplifier”)) return “opamp”;
-if (q.includes(“comparator”)) return “comparator”;
-if (q.includes(“voltage reference”) || q.includes(“vref”)) return “voltage_ref”;
-if (q.includes(“ldo”) || (q.includes(“linear regulator”) && !q.includes(“switching”))) return “ldo”;
-if (q.includes(“dc-dc”) || q.includes(“buck”) || q.includes(“boost”) || q.includes(“switching regulator”)) return “dcdc_buck”;
-if (q.includes(“electrolytic”) || q.includes(“aluminum capacitor”)) return “cap_electrolytic”;
-if (q.includes(“tantalum”)) return “cap_tantalum”;
-if (q.includes(“film capacitor”)) return “cap_film”;
-if (q.includes(“ceramic”) || q.includes(“mlcc”)) return “cap_ceramic”;
-if (q.includes(“capacitor”) || q.match(/\d+\s*(uf|nf|pf)\b/)) return “cap_ceramic”;
-if (q.includes(“inductor”) || q.includes(“choke”) || q.match(/\d+\s*(uh|nh|mh)\b/)) return “inductor”;
-if (q.includes(“resistor”) || q.match(/\d+\s*(ohm|kohm)\b/)) return “resistor_smd”;
-if (q.includes(“current sensor”) || q.includes(“current sense”)) return “current_sensor”;
-if (q.includes(“temperature sensor”) || q.includes(“temp sensor”)) return “temp_sensor”;
+if (q.includes("pnp")) return "bjt_pnp";
+if (q.includes("npn") || (q.includes("bjt") && !q.includes("pnp")) || (q.includes("transistor") && !q.includes("mosfet"))) return "bjt_npn";
+if (q.includes("schottky")) return "diode_schottky";
+if (q.includes("zener")) return "diode_zener";
+if (q.includes("diode") || q.includes("rectifier")) return "diode_rectifier";
+if (q.includes("gate driver") || q.includes("gate drive ic")) return "gate_driver";
+if (q.includes("op-amp") || q.includes("opamp") || q.includes("op amp") || q.includes("operational amplifier")) return "opamp";
+if (q.includes("comparator")) return "comparator";
+if (q.includes("voltage reference") || q.includes("vref")) return "voltage_ref";
+if (q.includes("ldo") || (q.includes("linear regulator") && !q.includes("switching"))) return "ldo";
+if (q.includes("dc-dc") || q.includes("buck") || q.includes("boost") || q.includes("switching regulator")) return "dcdc_buck";
+if (q.includes("electrolytic") || q.includes("aluminum capacitor")) return "cap_electrolytic";
+if (q.includes("tantalum")) return "cap_tantalum";
+if (q.includes("film capacitor")) return "cap_film";
+if (q.includes("ceramic") || q.includes("mlcc")) return "cap_ceramic";
+if (q.includes("capacitor") || q.match(/\d+\s*(uf|nf|pf)\b/)) return "cap_ceramic";
+if (q.includes("inductor") || q.includes("choke") || q.match(/\d+\s*(uh|nh|mh)\b/)) return "inductor";
+if (q.includes("resistor") || q.match(/\d+\s*(ohm|kohm)\b/)) return "resistor_smd";
+if (q.includes("current sensor") || q.includes("current sense")) return "current_sensor";
+if (q.includes("temperature sensor") || q.includes("temp sensor")) return "temp_sensor";
 return null;
 }
 
@@ -433,10 +433,10 @@ if (nfM.length > 0 && !specs.capacitanceUF) specs.capacitanceNF = parseFloat(nfM
 var uhM = lower.match(/(\d+(?:.\d+)?)\s*uh\b/gi) || [];
 if (uhM.length > 0) specs.inductanceUH = parseFloat(uhM[0]);
 var mhzM = lower.match(/(\d+(?:.\d+)?)\s*mhz\b/gi) || [];
-if (mhzM.length > 0 && (lower.includes(“gbw”) || lower.includes(“bandwidth”))) specs.gbwMHz = parseFloat(mhzM[0]);
+if (mhzM.length > 0 && (lower.includes("gbw") || lower.includes("bandwidth"))) specs.gbwMHz = parseFloat(mhzM[0]);
 var mvM = lower.match(/(\d+(?:.\d+)?)\s*mv\b/gi) || [];
-if (mvM.length > 0 && (lower.includes(“dropout”) || lower.includes(“ldo”))) specs.dropoutMV = parseFloat(mvM[0]);
-console.log(“Required specs:”, JSON.stringify(specs));
+if (mvM.length > 0 && (lower.includes("dropout") || lower.includes("ldo"))) specs.dropoutMV = parseFloat(mvM[0]);
+console.log("Required specs:", JSON.stringify(specs));
 return specs;
 }
 
@@ -444,11 +444,11 @@ return specs;
 // EXTRACT JSON
 // =============================================
 function extractJSON(text) {
-var clean = text.replace(/`json/gi, "").replace(/`/g, “”).trim();
+var clean = text.replace(/`json/gi, "").replace(/`/g, "").trim();
 var depth = 0, start = -1, end = -1;
 for (var i = 0; i < clean.length; i++) {
-if (clean[i] === “{”) { if (depth === 0) start = i; depth++; }
-else if (clean[i] === “}”) { depth–; if (depth === 0) { end = i; break; } }
+if (clean[i] === "{") { if (depth === 0) start = i; depth++; }
+else if (clean[i] === "}") { depth–; if (depth === 0) { end = i; break; } }
 }
 if (start === -1 || end === -1) return null;
 try { return JSON.parse(clean.substring(start, end + 1)); } catch (e) { return null; }
@@ -466,42 +466,42 @@ return all.sort(function(a, b) { return b.length - a.length; })[0];
 // CALL AI
 // =============================================
 async function callAI(system, messages, maxTokens) {
-var fetch = (await import(“node-fetch”)).default;
-var models = [“claude-sonnet-4-20250514”, “claude-haiku-4-5-20251001”];
+var fetch = (await import("node-fetch")).default;
+var models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"];
 for (var attempt = 1; attempt <= 3; attempt++) {
 var model = attempt <= 2 ? models[0] : models[1];
 try {
-var aiRes = await fetch(“https://api.anthropic.com/v1/messages”, {
-method: “POST”,
-headers: { “Content-Type”: “application/json”, “x-api-key”: process.env.ANTHROPIC_API_KEY, “anthropic-version”: “2023-06-01” },
+var aiRes = await fetch("https://api.anthropic.com/v1/messages", {
+method: "POST",
+headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
 body: JSON.stringify({ model: model, max_tokens: maxTokens || 3000, system: system, messages: messages }),
 });
 var aiData = await aiRes.json();
-if (aiData.error && aiData.error.type === “overloaded_error”) { await new Promise(function(r) { setTimeout(r, attempt * 3000); }); continue; }
+if (aiData.error && aiData.error.type === "overloaded_error") { await new Promise(function(r) { setTimeout(r, attempt * 3000); }); continue; }
 if (aiData.error) return { error: aiData.error.message };
-var text = (aiData.content || []).map(function(b) { return b.text || “”; }).join(””);
+var text = (aiData.content || []).map(function(b) { return b.text || ""; }).join("");
 return { text: text };
 } catch (err) {
 if (attempt < 3) await new Promise(function(r) { setTimeout(r, 2000); });
 }
 }
-return { error: “All retries failed.” };
+return { error: "All retries failed." };
 }
 
 // =============================================
 // SYSTEM PROMPTS
 // =============================================
-var INTENT_SYSTEM = “You classify hardware engineering queries. Consider full conversation context. If the new message is a follow-up refinement (like ‘only in stock’, ‘cheaper’, ‘different package’, ‘find alternatives’), classify it as the SAME intent as the previous turn. Any message asking for a component, part, chip, MOSFET, op-amp, capacitor, inductor, resistor, diode, regulator, sensor, or any electronic part MUST be classified as part_search. Respond ONLY with JSON: {"intent":"part_search|find_alternatives|generate_bom|circuit_question|calculation|correction|general","partNumber":"extracted part number or null","needsMoreInfo":false,"followUpQuestion":null}”;
+var INTENT_SYSTEM = "You classify hardware engineering queries. Consider full conversation context. If the new message is a follow-up refinement (like ‘only in stock’, ‘cheaper’, ‘different package’, ‘find alternatives’), classify it as the SAME intent as the previous turn. Any message asking for a component, part, chip, MOSFET, op-amp, capacitor, inductor, resistor, diode, regulator, sensor, or any electronic part MUST be classified as part_search. Respond ONLY with JSON: {"intent":"part_search|find_alternatives|generate_bom|circuit_question|calculation|correction|general","partNumber":"extracted part number or null","needsMoreInfo":false,"followUpQuestion":null}";
 
-var ENGINEERING_SYSTEM = “You are PartTensor, a senior hardware application engineer AI. Help engineers with circuit design, calculations, and troubleshooting. Be direct, technical and precise. Use real formulas and examples. Format with **bold headers** and - bullet points.”;
+var ENGINEERING_SYSTEM = "You are PartTensor, a senior hardware application engineer AI. Help engineers with circuit design, calculations, and troubleshooting. Be direct, technical and precise. Use real formulas and examples. Format with **bold headers** and - bullet points.";
 
-var ENRICHMENT_SYSTEM = “You are a senior application engineer. You are given real parts with real specs from Nexar/Octopart. Your job is to rank them and add engineering context. DO NOT change part numbers or specs. Respond ONLY with raw JSON starting with {: {"category":"N-Channel MOSFET","interpretation":"one sentence","designTip":"tip","rankedResults":[{"partNumber":"IRF540NPBF","rank":"top","aeComment":"reason","caution":null,"applications":["Motor Drive"]}]}”;
+var ENRICHMENT_SYSTEM = "You are a senior application engineer. You are given real parts with real specs from Nexar/Octopart. Your job is to rank them and add engineering context. DO NOT change part numbers or specs. Respond ONLY with raw JSON starting with {: {"category":"N-Channel MOSFET","interpretation":"one sentence","designTip":"tip","rankedResults":[{"partNumber":"IRF540NPBF","rank":"top","aeComment":"reason","caution":null,"applications":["Motor Drive"]}]}";
 
-var BOM_SYSTEM = “You are a senior hardware application engineer. Generate a smart Bill of Materials. Only critical components: MOSFETs, ICs, drivers, specialized inductors, electrolytic caps, current sense resistors, crystals, connectors, optocouplers, diodes, sensors. NO generic resistors, 100nF caps, generic LEDs. Use full part numbers. 5 keySpecs per part. Respond ONLY with raw JSON starting with {: {"bomItems":[{"id":1,"function":"Gate Driver","partNumber":"IR2184SPBF","manufacturer":"Infineon","description":"one line","category":"IC","quantity":1,"keySpecs":"600V 2A SO-8","package":"SO-8","priority":"critical","unitPrice":"$1.20","notes":null}],"projectName":"name","description":"sentence","voltage":"V","power":"W","designNotes":"notes","totalEstimate":"$15-25"}”;
+var BOM_SYSTEM = "You are a senior hardware application engineer. Generate a smart Bill of Materials. Only critical components: MOSFETs, ICs, drivers, specialized inductors, electrolytic caps, current sense resistors, crystals, connectors, optocouplers, diodes, sensors. NO generic resistors, 100nF caps, generic LEDs. Use full part numbers. 5 keySpecs per part. Respond ONLY with raw JSON starting with {: {"bomItems":[{"id":1,"function":"Gate Driver","partNumber":"IR2184SPBF","manufacturer":"Infineon","description":"one line","category":"IC","quantity":1,"keySpecs":"600V 2A SO-8","package":"SO-8","priority":"critical","unitPrice":"$1.20","notes":null}],"projectName":"name","description":"sentence","voltage":"V","power":"W","designNotes":"notes","totalEstimate":"$15-25"}";
 
-var PASSIVE_KEYWORDS = [“connector”,“receptacle”,“plug”,“socket”,“jack”,“header”,“terminal”,“coax”,“mmcx”,“sma”,“bnc”,“crystal”,“resonator”,“transformer”,“relay”,“switch”,“fuse”,“varistor”,“thermistor”,“potentiometer”,“antenna”,“balun”];
+var PASSIVE_KEYWORDS = ["connector","receptacle","plug","socket","jack","header","terminal","coax","mmcx","sma","bnc","crystal","resonator","transformer","relay","switch","fuse","varistor","thermistor","potentiometer","antenna","balun"];
 function isPassiveConnector(description, categoryName) {
-var text = ((description || “”) + “ “ + (categoryName || “”)).toLowerCase();
+var text = ((description || "") + " " + (categoryName || "")).toLowerCase();
 for (var i = 0; i < PASSIVE_KEYWORDS.length; i++) { if (text.indexOf(PASSIVE_KEYWORDS[i]) !== -1) return true; }
 return false;
 }
@@ -509,20 +509,20 @@ return false;
 // =============================================
 // HEALTH
 // =============================================
-app.get(”/api/health”, function(req, res) {
-res.json({ status: “ok”, service: “PartTensor”, time: new Date().toISOString() });
+app.get("/api/health", function(req, res) {
+res.json({ status: "ok", service: "PartTensor", time: new Date().toISOString() });
 });
 
 // =============================================
 // MAIN CHAT ENDPOINT
 // =============================================
-app.post(”/api/chat”, async function(req, res) {
+app.post("/api/chat", async function(req, res) {
 try {
 var message = req.body.message;
 var history = req.body.history || [];
 var isCorrection = req.body.isCorrection || false;
-if (!message) return res.status(400).json({ error: “Message is required” });
-console.log(”\n[CHAT]”, message.substring(0, 80));
+if (!message) return res.status(400).json({ error: "Message is required" });
+console.log("\n[CHAT]", message.substring(0, 80));
 
 ```
 var requiredSpecs = extractRequiredSpecs(message);
@@ -690,41 +690,41 @@ return res.json({ text: "Found " + parts.length + " real parts from Nexar catalo
 ```
 
 } catch (err) {
-console.error(“Chat error:”, err.message, err.stack);
-res.status(500).json({ error: “Server error: “ + err.message });
+console.error("Chat error:", err.message, err.stack);
+res.status(500).json({ error: "Server error: " + err.message });
 }
 });
 
 // =============================================
 // EXCEL BOM UPLOAD
 // =============================================
-app.post(”/api/excel-bom”, express.raw({ type: “*/*”, limit: “10mb” }), async function(req, res) {
+app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async function(req, res) {
 try {
-var fileContent = req.body.toString(“utf8”);
-var lines = fileContent.split(”\n”).filter(function(l) { return l.trim(); });
-if (lines.length === 0) return res.status(400).json({ error: “Empty file” });
-var headers = lines[0].split(”,”).map(function(h) { return h.replace(/”/g, “”).trim().toLowerCase(); });
+var fileContent = req.body.toString("utf8");
+var lines = fileContent.split("\n").filter(function(l) { return l.trim(); });
+if (lines.length === 0) return res.status(400).json({ error: "Empty file" });
+var headers = lines[0].split(",").map(function(h) { return h.replace(/"/g, "").trim().toLowerCase(); });
 var pnColIdx = 0;
-var pnKeywords = [“part number”,“pn”,“mpn”,“part no”,“partno”,“part#”,“component”,“part_number”];
+var pnKeywords = ["part number","pn","mpn","part no","partno","part#","component","part_number"];
 for (var ki = 0; ki < pnKeywords.length; ki++) { for (var hi = 0; hi < headers.length; hi++) { if (headers[hi].indexOf(pnKeywords[ki]) !== -1) { pnColIdx = hi; break; } } }
 var partNumbers = [];
-for (var li = 1; li < lines.length; li++) { var cols = lines[li].split(”,”).map(function(c) { return c.replace(/”/g, “”).trim(); }); if (cols[pnColIdx]) partNumbers.push(cols[pnColIdx]); }
-if (partNumbers.length === 0) return res.status(400).json({ error: “No part numbers found.” });
+for (var li = 1; li < lines.length; li++) { var cols = lines[li].split(",").map(function(c) { return c.replace(/"/g, "").trim(); }); if (cols[pnColIdx]) partNumbers.push(cols[pnColIdx]); }
+if (partNumbers.length === 0) return res.status(400).json({ error: "No part numbers found." });
 var results = [];
 var limit = Math.min(partNumbers.length, 15);
 for (var pi = 0; pi < limit; pi++) {
 var pn = partNumbers[pi];
 if (!pn) continue;
-var row = { partNumber: pn, description: “”, category: “”, keySpecs: “”, stock: 0, bestPrice: “”, dkStock: 0, mousStock: 0, alt1: “”, alt2: “”, alt3: “” };
+var row = { partNumber: pn, description: "", category: "", keySpecs: "", stock: 0, bestPrice: "", dkStock: 0, mousStock: 0, alt1: "", alt2: "", alt3: "" };
 try {
 var partData = await lookupNexarPart(pn);
 if (partData) {
-var converted = convertNexarResult({ part: partData }, detectComponentType((partData.shortDescription || “”) + “ “ + ((partData.category && partData.category.name) || “”)));
-row.description = partData.shortDescription || “”;
-row.category = (partData.category && partData.category.name) || “”;
-row.keySpecs = converted.keySpecs.map(function(s) { return s.label + “=” + s.value + s.unit; }).join(”; “);
+var converted = convertNexarResult({ part: partData }, detectComponentType((partData.shortDescription || "") + " " + ((partData.category && partData.category.name) || "")));
+row.description = partData.shortDescription || "";
+row.category = (partData.category && partData.category.name) || "";
+row.keySpecs = converted.keySpecs.map(function(s) { return s.label + "=" + s.value + s.unit; }).join("; ");
 row.stock = converted.stockData.totalStock;
-row.bestPrice = converted.stockData.bestPrice || “”;
+row.bestPrice = converted.stockData.bestPrice || "";
 row.dkStock = converted.stockData.digikey ? converted.stockData.digikey.stock : 0;
 row.mousStock = converted.stockData.mouser ? converted.stockData.mouser.stock : 0;
 
@@ -761,13 +761,13 @@ res.setHeader("Content-Disposition", "attachment; filename=BOM_PartTensor.csv");
 res.send(csv);
 ```
 
-} catch (err) { console.error(“Excel BOM error:”, err.message); res.status(500).json({ error: “Failed to process file: “ + err.message }); }
+} catch (err) { console.error("Excel BOM error:", err.message); res.status(500).json({ error: "Failed to process file: " + err.message }); }
 });
 
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
-console.log(”\nPartTensor backend running on port “ + PORT);
-console.log(”  GET  /api/health”);
-console.log(”  POST /api/chat  - Nexar parametric search”);
-console.log(”  POST /api/excel-bom\n”);
+console.log("\nPartTensor backend running on port " + PORT);
+console.log("  GET  /api/health");
+console.log("  POST /api/chat  - Nexar parametric search");
+console.log("  POST /api/excel-bom\n");
 });
