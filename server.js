@@ -574,7 +574,7 @@ function extractPartNumber(text) {
 
 function extractRequiredSpecs(query) {
   var lower = query.toLowerCase(); var specs = {};
-  var vM = lower.match(/(\d+(?:\.\d+)?)\s*v\b/gi) || [];
+    var vM = lower.match(/(\d+(?:\.\d+)?)\s*v(?:dc|ac|ac\/dc)?\b/gi) || [];
   if (vM.length > 0) { var vs = vM.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v) && v > 0; }); if (vs.length > 0) specs.voltage = Math.max.apply(null, vs); }
   var aM = lower.match(/(\d+(?:\.\d+)?)\s*a\b/gi) || [];
   if (aM.length > 0) { var as2 = aM.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v) && v > 0; }); if (as2.length > 0) specs.current = Math.max.apply(null, as2); }
