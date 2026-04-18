@@ -361,7 +361,7 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
     var researchPrompt = "I need to find the best electronic components for this request: " + query + (specsHint ? " Required specs:" + specsHint : "") + ". Please search DigiKey and Mouser right now and find the 4 best matching parts. For each part tell me: exact manufacturer part number, manufacturer name, key specs, package, why it is a good choice, and any cautions. Focus on parts that are currently in stock and from reputable manufacturers like Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet.";
 
     var res1 = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + process.env.GEMINI_API_KEY,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + process.env.GEMINI_API_KEY,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -391,7 +391,7 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
     var structurePrompt = "Based on this component research, extract the information into JSON. RESEARCH: " + researchText + " Extract EXACTLY 4 parts and return ONLY this JSON with no other text: {\"category\":\"component category\",\"interpretation\":\"one sentence summary\",\"designTip\":\"one practical tip\",\"results\":[{\"partNumber\":\"EXACT_MPN\",\"manufacturer\":\"Name\",\"type\":\"Component Type\",\"keySpecs\":[{\"label\":\"Main Rating\",\"value\":\"number\",\"unit\":\"unit\"},{\"label\":\"Spec2\",\"value\":\"number\",\"unit\":\"unit\"},{\"label\":\"Spec3\",\"value\":\"number\",\"unit\":\"unit\"},{\"label\":\"Package\",\"value\":\"package\",\"unit\":\"\"}],\"package\":\"package\",\"rank\":\"top\",\"aeComment\":\"Why this part is ideal with specific spec values\",\"caution\":null,\"applications\":[\"app1\",\"app2\"]}]}";
 
     var res2 = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + process.env.GEMINI_API_KEY,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + process.env.GEMINI_API_KEY,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
