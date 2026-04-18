@@ -357,91 +357,74 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
     if (requiredSpecs.capacitanceUF) specsHint += " capacitance~" + requiredSpecs.capacitanceUF + "uF";
     if (requiredSpecs.inductanceUH) specsHint += " inductance~" + requiredSpecs.inductanceUH + "uH";
 
-    var prompt = [
-      "You are a senior hardware application engineer sourcing electronic components.",
-      "",
-      "REQUEST: " + query + (specsHint ? "\nREQUIRED SPECS: " + specsHint : ""),
-      "",
-      "Search DigiKey.com and Mouser.com RIGHT NOW to find the best 4 parts for this request.",
-      "Use Google Search to find current listings, datasheets, and availability.",
-      "",
-      "STRICT RULES:",
-      "1. Return EXACTLY 4 parts from 4 DIFFERENT manufacturers",
-      "2. ALL parts MUST meet or exceed required specs",
-      "3. Use the EXACT MPN as listed on DigiKey - search to verify it exists",
-      "4. For relays: coil voltage must MATCH exactly, contact current must be >=",
-      "5. For MOSFETs: Vds >= requested voltage, Id >= requested current",
-      "6. For capacitors: value within 20% of requested",
-      "7. Prefer in-stock parts",
-      "8. rank: first=top, second=good, third=alternative, fourth=alternative",
-      "9. aeComment: explain why this part fits with actual spec numbers",
-      "10. Only manufacturers: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas,",
-      "    Nexperia, Microchip, Omron, TE Connectivity, Panasonic, Murata, Wurth,",
-      "    Kemet, Bourns, Littelfuse, Diodes Inc, IXYS, Semtech",
-      "",
-      "Return ONLY raw JSON with no markdown, no explanation:",
-      "{\"category\":\"component category\",\"interpretation\":\"one sentence what user needs\",",
-      "\"designTip\":\"one specific practical tip for this application\",",
-      "\"results\":[{",
-      "  \"partNumber\":\"EXACT_MPN_FROM_DIGIKEY\",",
-      "  \"manufacturer\":\"Manufacturer Name\",",
-      "  \"type\":\"Component Type\",",
-      "  \"keySpecs\":[",
-      "    {\"label\":\"Main Rating\",\"value\":\"value\",\"unit\":\"unit\"},",
-      "    {\"label\":\"Second Spec\",\"value\":\"value\",\"unit\":\"unit\"},",
-      "    {\"label\":\"Third Spec\",\"value\":\"value\",\"unit\":\"unit\"},",
-      "    {\"label\":\"Package\",\"value\":\"PKG\",\"unit\":\"\"}",
-      "  ],",
-      "  \"package\":\"package\",",
-      "  \"rank\":\"top\",",
-      "  \"aeComment\":\"Specific reason with actual spec values why this fits the application\",",
-      "  \"caution\":null,",
-      "  \"applications\":[\"app1\",\"app2\"]",
-      "}]}",
-    ].join("\n");
+    // Step 1: Let Gemini search freely and think like an engineer
+    var researchPrompt = "I need to find the best electronic components for this request: " + query + (specsHint ? " Required specs:" + specsHint : "") + ". Please search DigiKey and Mouser right now and find the 4 best matching parts. For each part tell me: exact manufacturer part number, manufacturer name, key specs, package, why it is a good choice, and any cautions. Focus on parts that are currently in stock and from reputable manufacturers like Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet.";
 
-    var res = await fetch(
+    var res1 = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + process.env.GEMINI_API_KEY,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          contents: [{ role: "user", parts: [{ text: researchPrompt }] }],
           tools: [{ google_search: {} }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
+          generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
         }),
       }
     );
 
-    if (!res.ok) {
-      var errText = await res.text();
-      console.error("Gemini error:", res.status, errText.substring(0, 300));
+    if (!res1.ok) {
+      var errText = await res1.text();
+      console.error("Gemini research error:", res1.status, errText.substring(0, 300));
       return null;
     }
 
-    var data = await res.json();
-    var candidates = data.candidates || [];
-    if (candidates.length === 0) { console.error("Gemini no candidates"); return null; }
-    var parts2 = (candidates[0].content && candidates[0].content.parts) || [];
-    var text = parts2.map(function(p) { return p.text || ""; }).join("");
-    console.log("Gemini response (500):", text.substring(0, 500));
+    var data1 = await res1.json();
+    var candidates1 = data1.candidates || [];
+    if (candidates1.length === 0) return null;
+    var researchText = ((candidates1[0].content && candidates1[0].content.parts) || []).map(function(p) { return p.text || ""; }).join("");
+    console.log("Gemini research (500):", researchText.substring(0, 500));
 
-    var clean = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    if (!researchText || researchText.length < 100) return null;
+
+    // Step 2: Ask Gemini to convert its own research into structured JSON
+    var structurePrompt = "Based on this component research, extract the information into JSON. RESEARCH: " + researchText + " Extract EXACTLY 4 parts and return ONLY this JSON with no other text: {\"category\":\"component category\",\"interpretation\":\"one sentence summary\",\"designTip\":\"one practical tip\",\"results\":[{\"partNumber\":\"EXACT_MPN\",\"manufacturer\":\"Name\",\"type\":\"Component Type\",\"keySpecs\":[{\"label\":\"Main Rating\",\"value\":\"number\",\"unit\":\"unit\"},{\"label\":\"Spec2\",\"value\":\"number\",\"unit\":\"unit\"},{\"label\":\"Spec3\",\"value\":\"number\",\"unit\":\"unit\"},{\"label\":\"Package\",\"value\":\"package\",\"unit\":\"\"}],\"package\":\"package\",\"rank\":\"top\",\"aeComment\":\"Why this part is ideal with specific spec values\",\"caution\":null,\"applications\":[\"app1\",\"app2\"]}]}";
+
+    var res2 = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + process.env.GEMINI_API_KEY,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: structurePrompt }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 3000 },
+        }),
+      }
+    );
+
+    if (!res2.ok) { console.error("Gemini structure error:", res2.status); return null; }
+    var data2 = await res2.json();
+    var candidates2 = data2.candidates || [];
+    if (candidates2.length === 0) return null;
+    var structText = ((candidates2[0].content && candidates2[0].content.parts) || []).map(function(p) { return p.text || ""; }).join("");
+    console.log("Gemini structured (300):", structText.substring(0, 300));
+
+    var clean = structText.replace(/```json/gi, "").replace(/```/g, "").trim();
     var depth = 0, start = -1, end = -1;
     for (var i = 0; i < clean.length; i++) {
       if (clean[i] === "{") { if (depth === 0) start = i; depth++; }
       else if (clean[i] === "}") { depth--; if (depth === 0) { end = i; break; } }
     }
-    if (start === -1 || end === -1) { console.error("No JSON in Gemini response"); return null; }
+    if (start === -1 || end === -1) { console.error("No JSON in Gemini structure response"); return null; }
 
     try {
       var parsed = JSON.parse(clean.substring(start, end + 1));
       if (parsed && parsed.results && parsed.results.length > 0) {
-        console.log("Gemini suggested:", parsed.results.map(function(p) { return p.partNumber; }).join(", "));
+        console.log("Gemini final parts:", parsed.results.map(function(p) { return p.partNumber; }).join(", "));
         return parsed;
       }
       return null;
-    } catch (e) { console.error("Gemini JSON parse failed:", e.message); return null; }
+    } catch (e) { console.error("Gemini structure JSON parse failed:", e.message); return null; }
   } catch (e) { console.error("Gemini failed:", e.message); return null; }
 }
 
