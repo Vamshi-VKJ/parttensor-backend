@@ -214,7 +214,7 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
 
     var prompt = "Search DigiKey and Mouser right now for: " + query + (specsHint ? " [Required:" + specsHint + "]" : "") + "\n\nFind EXACTLY 4 real parts currently in stock on DigiKey or Mouser. Rules:\n1. Use EXACT manufacturer part number (MPN) as on DigiKey\n2. Specs must meet requirements\n3. Only in-stock parts\n4. Reputable manufacturers only: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet, Bourns, Nexperia, Microchip\n\nReturn ONLY valid JSON, no markdown:\n{\"category\":\"type\",\"interpretation\":\"summary\",\"designTip\":\"tip\",\"results\":[{\"partNumber\":\"EXACT_MPN\",\"manufacturer\":\"Mfr\",\"type\":\"Type\",\"keySpecs\":[{\"label\":\"L\",\"value\":\"V\",\"unit\":\"U\"},{\"label\":\"L2\",\"value\":\"V2\",\"unit\":\"U2\"},{\"label\":\"L3\",\"value\":\"V3\",\"unit\":\"U3\"},{\"label\":\"Package\",\"value\":\"PKG\",\"unit\":\"\"}],\"package\":\"PKG\",\"rank\":\"top\",\"aeComment\":\"Why good choice\",\"caution\":null,\"applications\":[\"app\"]}]}";
 
-    var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + process.env.GEMINI_API_KEY, {
+    var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + process.env.GEMINI_API_KEY, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
