@@ -371,7 +371,7 @@ async function callAI(system, messages, maxTokens) {
 // =============================================
 // SYSTEM PROMPTS
 // =============================================
-var INTENT_SYSTEM = "You classify hardware engineering queries. Consider full conversation context. If the new message is a follow-up refinement (like 'only in stock', 'cheaper', 'different package', 'find alternatives'), classify it as the SAME intent as the previous turn. Any message asking for a component, part, chip, MOSFET, op-amp, capacitor, inductor, resistor, diode, regulator, sensor, or any electronic part MUST be classified as part_search. Respond ONLY with JSON: {\"intent\":\"part_search|find_alternatives|generate_bom|circuit_question|calculation|correction|general\",\"partNumber\":\"extracted part number or null\",\"needsMoreInfo\":false,\"followUpQuestion\":null}";
+var INTENT_SYSTEM = "You classify hardware engineering queries into exactly one intent. CRITICAL RULES:\n1. ANY message mentioning a component name, part type, or asking to find/recommend/suggest a part MUST be classified as part_search. This includes: relay, MOSFET, capacitor, resistor, inductor, diode, transistor, op-amp, LDO, regulator, sensor, connector, switch, fuse, crystal, oscillator, driver, controller, microcontroller, IGBT, thyristor, triac, optocoupler, transformer, filter, antenna, module, IC, chip, or ANY electronic component.\n2. Only classify as circuit_question if asking HOW something works with NO component request.\n3. Only classify as calculation if asking to calculate a value with NO component request.\n4. Only classify as general if completely unrelated to electronics.\n5. Follow-up refinements like 'cheaper', 'in stock', 'SMD version', 'different package' keep the SAME intent as previous turn.\nRespond ONLY with JSON: {\"intent\":\"part_search|find_alternatives|generate_bom|circuit_question|calculation|correction|general\",\"partNumber\":null,\"needsMoreInfo\":false,\"followUpQuestion\":null}";
 
 var ENGINEERING_SYSTEM = "You are PartTensor, a senior hardware application engineer AI. Help engineers with component selection, circuit design, calculations, and troubleshooting. Be direct, technical and precise. Use real formulas and examples. Format with **bold headers** and - bullet points. Keep answers focused and practical.";
 
@@ -423,7 +423,15 @@ app.post("/api/stock-bulk", async function(req, res) {
     res.status(500).json({ error: err.message });
   }
 });
+var COMPONENT_KEYWORDS = ["relay","mosfet","capacitor","resistor","inductor","diode","transistor","op-amp","opamp","ldo","regulator","sensor","connector","switch","fuse","crystal","oscillator","driver","controller","igbt","thyristor","triac","optocoupler","transformer","ic","chip","bjt","scr","module","rectifier","varistor","thermistor","potentiometer","encoder","actuator","solenoid","motor driver","gate driver","voltage reference","comparator","adc","dac","mux","buffer","gate","flip-flop","counter","timer","pwm","mosfet","fet","bjt","scr"];
 
+function forcePartSearch(message, intent) {
+  var lower = message.toLowerCase();
+  for (var i = 0; i < COMPONENT_KEYWORDS.length; i++) {
+    if (lower.includes(COMPONENT_KEYWORDS[i])) return "part_search";
+  }
+  return intent;
+}
 // =============================================
 // MAIN CHAT ENDPOINT
 // =============================================
@@ -490,10 +498,15 @@ app.post("/api/chat", async function(req, res) {
     if (intentResult.text) {
       var ip = extractJSON(intentResult.text);
       if (ip) { intent = ip.intent || "part_search"; needsMoreInfo = ip.needsMoreInfo || false; followUpQuestion = ip.followUpQuestion || null; detectedPN = ip.partNumber || null; }
+      intent = forcePartSearch(message, intent);
     }
     console.log("Intent:", intent, "PN:", detectedPN, "Specs:", JSON.stringify(requiredSpecs));
 
     if (needsMoreInfo && followUpQuestion && !isCorrection) return res.json({ text: followUpQuestion, intent: intent, mode: "question" });
+    // Block non-electronics queries
+    if (intent === "general") {
+      return res.json({ text: "I am PartTensor, a hardware engineering AI. I can help you find electronic components, check stock, generate BOMs, and answer circuit design questions. What component or design challenge can I help you with?", intent: intent, mode: "text" });
+    }
 
     var fullMessages = [];
     history.slice(-8).forEach(function(m) { if (m.content) fullMessages.push({ role: m.role, content: m.content }); });
