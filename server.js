@@ -6,6 +6,7 @@ console.log("=== PartTensor Backend Starting ===");
 console.log("Anthropic:", process.env.ANTHROPIC_API_KEY ? "OK" : "MISSING");
 console.log("DigiKey:", process.env.DIGIKEY_CLIENT_ID ? "OK" : "MISSING");
 console.log("Mouser:", process.env.MOUSER_API_KEY ? "OK" : "MISSING");
+console.log("Supabase:", process.env.SUPABASE_URL ? "OK" : "MISSING");
 
 const app = express();
 app.use(cors());
@@ -24,6 +25,137 @@ function getCached(cache, key) {
 }
 function setCache(cache, key, data, ttl) {
   cache[key] = { data: data, time: Date.now(), ttl: ttl };
+}
+
+// =============================================
+// SUPABASE CLIENT
+// =============================================
+async function supabaseQuery(method, table, body, params) {
+  try {
+    var fetch = (await import("node-fetch")).default;
+    var url = process.env.SUPABASE_URL + "/rest/v1/" + table;
+    if (params) url += "?" + params;
+    var res = await fetch(url, {
+      method: method || "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": process.env.SUPABASE_KEY,
+        "Authorization": "Bearer " + process.env.SUPABASE_KEY,
+        "Prefer": method === "POST" ? "return=minimal" : "return=representation",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      var err = await res.text();
+      console.error("Supabase error:", res.status, err.substring(0, 200));
+      return null;
+    }
+    if (method === "POST" && res.status === 201) return true;
+    var text = await res.text();
+    return text ? JSON.parse(text) : true;
+  } catch (e) {
+    console.error("Supabase query failed:", e.message);
+    return null;
+  }
+}
+
+// Store interaction in Supabase
+async function trackInteraction(data) {
+  try {
+    await supabaseQuery("POST", "interactions", {
+      session_id: data.sessionId || "anon",
+      query: data.query || "",
+      component_type: data.componentType || "",
+      required_voltage: data.requiredVoltage || null,
+      required_current: data.requiredCurrent || null,
+      part_number: data.partNumber || "",
+      manufacturer: data.manufacturer || "",
+      action: data.action || "",
+      position: data.position || null,
+      total_results: data.totalResults || null,
+    });
+
+    // Update part_performance score
+    var score = 0;
+    if (data.action === "buy_dk" || data.action === "buy_mouser") score = 10;
+    else if (data.action === "datasheet") score = 5;
+    else if (data.action === "card_click") score = 2;
+    else if (data.action === "alternative_search") score = -3;
+    else if (data.action === "negative_feedback") score = -8;
+
+    // Position bonus - clicking result #1 is less impressive than clicking result #4
+    if (data.position && score > 0) score += (data.position - 1) * 2;
+
+    var queryNorm = (data.query || "").toLowerCase().trim().replace(/\s+/g, " ");
+    var existing = await supabaseQuery("GET", "part_performance", null,
+      "query_normalized=eq." + encodeURIComponent(queryNorm) + "&part_number=eq." + encodeURIComponent(data.partNumber || "") + "&select=id,buy_clicks,datasheet_clicks,card_clicks,alternative_searches,negative_feedback,total_score"
+    );
+
+    if (existing && existing.length > 0) {
+      var rec = existing[0];
+      var updates = { total_score: (rec.total_score || 0) + score, last_updated: new Date().toISOString() };
+      if (data.action === "buy_dk" || data.action === "buy_mouser") updates.buy_clicks = (rec.buy_clicks || 0) + 1;
+      else if (data.action === "datasheet") updates.datasheet_clicks = (rec.datasheet_clicks || 0) + 1;
+      else if (data.action === "card_click") updates.card_clicks = (rec.card_clicks || 0) + 1;
+      else if (data.action === "alternative_search") updates.alternative_searches = (rec.alternative_searches || 0) + 1;
+      else if (data.action === "negative_feedback") updates.negative_feedback = (rec.negative_feedback || 0) + 1;
+      await supabaseQuery("PATCH", "part_performance", updates, "id=eq." + rec.id);
+    } else {
+      var newRec = {
+        query_normalized: queryNorm,
+        component_type: data.componentType || "",
+        required_voltage: data.requiredVoltage || null,
+        required_current: data.requiredCurrent || null,
+        part_number: data.partNumber || "",
+        manufacturer: data.manufacturer || "",
+        buy_clicks: (data.action === "buy_dk" || data.action === "buy_mouser") ? 1 : 0,
+        datasheet_clicks: data.action === "datasheet" ? 1 : 0,
+        card_clicks: data.action === "card_click" ? 1 : 0,
+        alternative_searches: data.action === "alternative_search" ? 1 : 0,
+        negative_feedback: data.action === "negative_feedback" ? 1 : 0,
+        total_score: score,
+        last_updated: new Date().toISOString(),
+      };
+      await supabaseQuery("POST", "part_performance", newRec);
+    }
+    console.log("Tracked:", data.action, data.partNumber, "score:", score);
+  } catch (e) {
+    console.error("trackInteraction failed:", e.message);
+  }
+}
+
+// Get learned rankings for a query
+async function getLearnedRankings(query, componentType) {
+  try {
+    var queryNorm = (query || "").toLowerCase().trim().replace(/\s+/g, " ");
+    var results = await supabaseQuery("GET", "part_performance", null,
+      "query_normalized=eq." + encodeURIComponent(queryNorm) + "&total_score=gt.0&order=total_score.desc&limit=10&select=part_number,manufacturer,total_score,buy_clicks,datasheet_clicks"
+    );
+    if (!results || results.length === 0) {
+      // Try component type match if no exact query match
+      if (componentType) {
+        results = await supabaseQuery("GET", "part_performance", null,
+          "component_type=eq." + encodeURIComponent(componentType) + "&total_score=gt.5&order=total_score.desc&limit=10&select=part_number,manufacturer,total_score,buy_clicks"
+        );
+      }
+    }
+    return results || [];
+  } catch (e) {
+    console.error("getLearnedRankings failed:", e.message);
+    return [];
+  }
+}
+
+// Boost results based on learned data
+function applyLearnedRanking(parts, learnedData) {
+  if (!learnedData || learnedData.length === 0) return parts;
+  var scoreMap = {};
+  learnedData.forEach(function(r) { scoreMap[r.part_number] = r.total_score; });
+  return parts.slice().sort(function(a, b) {
+    var aScore = scoreMap[a.partNumber] || 0;
+    var bScore = scoreMap[b.partNumber] || 0;
+    return bScore - aScore;
+  });
 }
 
 // =============================================
@@ -52,16 +184,12 @@ async function getDigikeyToken() {
       console.log("DigiKey token refreshed");
       return digikeyToken;
     }
-    console.error("DigiKey token error:", JSON.stringify(data).substring(0, 200));
     return null;
-  } catch (e) {
-    console.error("DigiKey token failed:", e.message);
-    return null;
-  }
+  } catch (e) { console.error("DigiKey token failed:", e.message); return null; }
 }
 
 // =============================================
-// DIGIKEY STOCK LOOKUP
+// STOCK LOOKUPS
 // =============================================
 async function lookupDigikey(mpn) {
   try {
@@ -75,21 +203,20 @@ async function lookupDigikey(mpn) {
       { method: "GET", headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
     );
     if (!res.ok) {
-      // Try keyword search as fallback
       var res2 = await fetch("https://api.digikey.com/products/v4/search/keyword", {
         method: "POST",
         headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD", "Content-Type": "application/json" },
         body: JSON.stringify({ Keywords: mpn, Limit: 3, Offset: 0 }),
       });
       if (!res2.ok) return null;
-      var data2 = await res2.json();
-      var products = data2.Products || [];
-      if (products.length === 0) return null;
-      var best = products.reduce(function(a, b) { return (b.QuantityAvailable || 0) > (a.QuantityAvailable || 0) ? b : a; });
-      var p2 = best.UnitPrice || (best.StandardPricing && best.StandardPricing[0] && best.StandardPricing[0].UnitPrice) || null;
-      var result2 = { found: true, stock: best.QuantityAvailable || 0, price: p2 ? "$" + parseFloat(p2).toFixed(3) : null, url: best.ProductUrl || "" };
-      setCache(stockCache, "dk_" + mpn, result2, STOCK_TTL);
-      return result2;
+      var d2 = await res2.json();
+      var prods = d2.Products || [];
+      if (prods.length === 0) return null;
+      var best2 = prods.reduce(function(a, b) { return (b.QuantityAvailable || 0) > (a.QuantityAvailable || 0) ? b : a; });
+      var p2 = best2.UnitPrice || (best2.StandardPricing && best2.StandardPricing[0] && best2.StandardPricing[0].UnitPrice) || null;
+      var r2 = { found: true, stock: best2.QuantityAvailable || 0, price: p2 ? "$" + parseFloat(p2).toFixed(3) : null, url: best2.ProductUrl || "" };
+      setCache(stockCache, "dk_" + mpn, r2, STOCK_TTL);
+      return r2;
     }
     var data = await res.json();
     var product = data.Product || data;
@@ -97,15 +224,9 @@ async function lookupDigikey(mpn) {
     var result = { found: true, stock: product.QuantityAvailable || 0, price: unitPrice ? "$" + parseFloat(unitPrice).toFixed(3) : null, url: product.ProductUrl || "" };
     setCache(stockCache, "dk_" + mpn, result, STOCK_TTL);
     return result;
-  } catch (e) {
-    console.error("DK lookup failed for " + mpn + ":", e.message);
-    return null;
-  }
+  } catch (e) { console.error("DK lookup failed:", mpn, e.message); return null; }
 }
 
-// =============================================
-// MOUSER STOCK LOOKUP
-// =============================================
 async function lookupMouser(mpn) {
   try {
     var cached = getCached(stockCache, "mo_" + mpn);
@@ -127,15 +248,9 @@ async function lookupMouser(mpn) {
     var result = { found: stock > 0, stock: stock, price: price || null, url: best.ProductDetailUrl || "" };
     setCache(stockCache, "mo_" + mpn, result, STOCK_TTL);
     return result;
-  } catch (e) {
-    console.error("Mouser lookup failed for " + mpn + ":", e.message);
-    return null;
-  }
+  } catch (e) { console.error("Mouser lookup failed:", mpn, e.message); return null; }
 }
 
-// =============================================
-// FETCH STOCK FROM BOTH DISTRIBUTORS IN PARALLEL
-// =============================================
 async function fetchStock(mpn) {
   var results = await Promise.all([lookupDigikey(mpn), lookupMouser(mpn)]);
   var dk = results[0];
@@ -161,7 +276,7 @@ async function fetchStock(mpn) {
 }
 
 // =============================================
-// EXTRACT JSON FROM AI RESPONSE
+// HELPERS
 // =============================================
 function extractJSON(text) {
   var clean = text.replace(/```json/gi, "").replace(/```/g, "").trim();
@@ -182,9 +297,6 @@ function extractPartNumber(text) {
   return all.sort(function(a, b) { return b.length - a.length; })[0];
 }
 
-// =============================================
-// EXTRACT REQUIRED SPECS FROM QUERY
-// =============================================
 function extractRequiredSpecs(query) {
   var lower = query.toLowerCase();
   var specs = {};
@@ -194,19 +306,40 @@ function extractRequiredSpecs(query) {
   if (aM.length > 0) { var as2 = aM.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v) && v > 0; }); if (as2.length > 0) specs.current = Math.max.apply(null, as2); }
   var maM = lower.match(/(\d+(?:\.\d+)?)\s*ma\b/gi) || [];
   if (maM.length > 0 && !specs.current) { var mas = maM.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v); }); if (mas.length > 0) specs.currentMA = Math.max.apply(null, mas); }
-  var wM = lower.match(/(\d+(?:\.\d+)?)\s*w\b/gi) || [];
-  if (wM.length > 0) { var ws = wM.map(function(m) { return parseFloat(m); }).filter(function(v) { return !isNaN(v) && v > 0.1; }); if (ws.length > 0) specs.power = Math.max.apply(null, ws); }
   var ufM = lower.match(/(\d+(?:\.\d+)?)\s*uf\b/gi) || [];
   if (ufM.length > 0) specs.capacitanceUF = parseFloat(ufM[0]);
-  var nfM = lower.match(/(\d+(?:\.\d+)?)\s*nf\b/gi) || [];
-  if (nfM.length > 0 && !specs.capacitanceUF) specs.capacitanceNF = parseFloat(nfM[0]);
   var uhM = lower.match(/(\d+(?:\.\d+)?)\s*uh\b/gi) || [];
   if (uhM.length > 0) specs.inductanceUH = parseFloat(uhM[0]);
-  var mhzM = lower.match(/(\d+(?:\.\d+)?)\s*mhz\b/gi) || [];
-  if (mhzM.length > 0 && (lower.includes("gbw") || lower.includes("bandwidth"))) specs.gbwMHz = parseFloat(mhzM[0]);
-  var mvM = lower.match(/(\d+(?:\.\d+)?)\s*mv\b/gi) || [];
-  if (mvM.length > 0 && (lower.includes("dropout") || lower.includes("ldo"))) specs.dropoutMV = parseFloat(mvM[0]);
   return specs;
+}
+
+function detectComponentType(query) {
+  var q = query.toLowerCase();
+  q = q.replace(/for\s+(motor|pfc|inverter|converter|charger|driver|controller|amplifier|supply|circuit|switching|drive|load|battery|solar|power)[^,]*/g, "");
+  if (q.includes("igbt")) return "igbt";
+  if (q.includes("mosfet") || q.includes(" fet") || q.includes("nmos")) {
+    if (q.includes("p-channel") || q.includes("pmos")) return "mosfet_p";
+    return "mosfet_n";
+  }
+  if (q.includes("pnp")) return "bjt_pnp";
+  if (q.includes("npn") || q.includes("bjt") || (q.includes("transistor") && !q.includes("mosfet"))) return "bjt_npn";
+  if (q.includes("schottky")) return "diode_schottky";
+  if (q.includes("zener")) return "diode_zener";
+  if (q.includes("diode") || q.includes("rectifier")) return "diode_rectifier";
+  if (q.includes("gate driver") || q.includes("gate drive ic")) return "gate_driver";
+  if (q.includes("op-amp") || q.includes("opamp") || q.includes("op amp")) return "opamp";
+  if (q.includes("comparator")) return "comparator";
+  if (q.includes("ldo") || (q.includes("linear regulator") && !q.includes("switching"))) return "ldo";
+  if (q.includes("dc-dc") || q.includes("buck") || q.includes("boost") || q.includes("switching regulator")) return "dcdc_buck";
+  if (q.includes("electrolytic")) return "cap_electrolytic";
+  if (q.includes("tantalum")) return "cap_tantalum";
+  if (q.includes("ceramic") || q.includes("mlcc")) return "cap_ceramic";
+  if (q.includes("capacitor") || q.match(/\d+\s*(uf|nf|pf)\b/)) return "cap_ceramic";
+  if (q.includes("inductor") || q.match(/\d+\s*(uh|nh|mh)\b/)) return "inductor";
+  if (q.includes("resistor")) return "resistor_smd";
+  if (q.includes("current sensor")) return "current_sensor";
+  if (q.includes("temperature sensor")) return "temp_sensor";
+  return null;
 }
 
 // =============================================
@@ -221,7 +354,7 @@ async function callAI(system, messages, maxTokens) {
       var aiRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({ model: model, max_tokens: maxTokens || 2000, system: system, messages: messages }),
+        body: JSON.stringify({ model: model, max_tokens: maxTokens || 3000, system: system, messages: messages }),
       });
       var aiData = await aiRes.json();
       if (aiData.error && aiData.error.type === "overloaded_error") { await new Promise(function(r) { setTimeout(r, attempt * 3000); }); continue; }
@@ -242,11 +375,11 @@ var INTENT_SYSTEM = "You classify hardware engineering queries. Consider full co
 
 var ENGINEERING_SYSTEM = "You are PartTensor, a senior hardware application engineer AI. Help engineers with component selection, circuit design, calculations, and troubleshooting. Be direct, technical and precise. Use real formulas and examples. Format with **bold headers** and - bullet points. Keep answers focused and practical.";
 
-var PART_SEARCH_SYSTEM = "You are a senior hardware application engineer. Suggest EXACTLY 4 real electronic parts that best match the user request.\n\nCRITICAL RULES - FOLLOW EXACTLY:\n1. Before suggesting any part, mentally verify its datasheet specs.\n2. If user asks for 100V, ONLY suggest parts with Vds/Vce/Vrrm >= 100V. A 60V part is WRONG.\n3. If user asks for 30A, ONLY suggest parts with Id/Ic/If >= 30A. A 1A part is WRONG.\n4. If user asks for 10uF capacitor, ONLY suggest parts close to 10uF. A 100pF part is WRONG.\n5. If user asks for 10uH inductor, ONLY suggest parts close to 10uH.\n6. For op-amps: GBW must meet or exceed requested value.\n7. For LDOs: output voltage must match, current must meet or exceed.\n8. Prefer parts closest to requested specs. For 100V 30A: prefer 100-120V 30-40A over 200V 150A.\n9. Only suggest parts from: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Nexperia, Microchip, Murata, Wurth, Panasonic, Kemet.\n10. Only suggest parts that actually exist on Digi-Key.\n\nSELF-CHECK before responding: For each part you suggest, verify:\n- Does it meet the voltage requirement? YES/NO\n- Does it meet the current requirement? YES/NO\n- Is the value close to what was requested? YES/NO\nIf any answer is NO, replace that part with a correct one.\n\nRespond ONLY with raw JSON starting with {:\n{\"category\":\"N-Channel MOSFET\",\"interpretation\":\"one sentence summary\",\"designTip\":\"one practical tip\",\"results\":[{\"partNumber\":\"IRF540NPBF\",\"manufacturer\":\"Vishay\",\"type\":\"N-Channel MOSFET\",\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"100\",\"unit\":\"V\"},{\"label\":\"ID\",\"value\":\"33\",\"unit\":\"A\"},{\"label\":\"RDS(on)\",\"value\":\"44\",\"unit\":\"mOhm\"},{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],\"package\":\"TO-220\",\"rank\":\"top\",\"aeComment\":\"100V/33A meets requirements exactly. Standard TO-220 package ideal for motor drives.\",\"caution\":null,\"applications\":[\"Motor Drive\",\"Power Switching\"]}]}";
+var PART_SEARCH_SYSTEM = "You are a senior hardware application engineer. Suggest EXACTLY 4 real electronic parts that best match the user request.\n\nCRITICAL RULES:\n1. Before suggesting any part, verify its datasheet specs from your training knowledge.\n2. If user asks for 100V, ONLY suggest parts with Vds/Vce/Vrrm >= 100V.\n3. If user asks for 30A, ONLY suggest parts with Id/Ic/If >= 30A.\n4. For capacitors: suggest parts closest to requested capacitance value.\n5. For inductors: suggest parts closest to requested inductance value.\n6. For op-amps: GBW must meet or exceed requested value.\n7. For LDOs: output voltage must match, current must meet or exceed.\n8. Prefer parts closest to requested specs - for 100V 30A prefer 100-120V 30-40A over 250V 150A.\n9. Only suggest parts from: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Nexperia, Microchip, Murata, Wurth, Panasonic, Kemet.\n10. Only suggest parts that actually exist on Digi-Key.\n\nSELF-CHECK: For each part verify - Does it meet voltage requirement? Does it meet current requirement? Is value close to requested?\n\nRespond ONLY with raw JSON starting with {:\n{\"category\":\"N-Channel MOSFET\",\"interpretation\":\"one sentence\",\"designTip\":\"one tip\",\"results\":[{\"partNumber\":\"IRF540NPBF\",\"manufacturer\":\"Vishay\",\"type\":\"N-Channel MOSFET\",\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"100\",\"unit\":\"V\"},{\"label\":\"ID\",\"value\":\"33\",\"unit\":\"A\"},{\"label\":\"RDS(on)\",\"value\":\"44\",\"unit\":\"mOhm\"},{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],\"package\":\"TO-220\",\"rank\":\"top\",\"aeComment\":\"100V/33A meets requirements. Popular in motor drives.\",\"caution\":null,\"applications\":[\"Motor Drive\"]}]}";
 
-var ALT_SEARCH_SYSTEM = "You are a senior hardware application engineer. Find EXACTLY 4 alternative parts for the given part number. Rules:\n1. All alternatives must meet or exceed the original part specs.\n2. Use different manufacturers than the original.\n3. Sort by best drop-in compatibility first.\n4. Only suggest parts that actually exist on Digi-Key.\nRespond ONLY with raw JSON starting with {:\n{\"originalPart\":\"IRF540NPBF\",\"originalSpecs\":\"100V 33A TO-220\",\"alternatives\":[{\"partNumber\":\"FQP33N10\",\"manufacturer\":\"ON Semi\",\"type\":\"N-Channel MOSFET\",\"compatibility\":\"drop-in\",\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"100\",\"unit\":\"V\"},{\"label\":\"ID\",\"value\":\"33\",\"unit\":\"A\"},{\"label\":\"RDS(on)\",\"value\":\"52\",\"unit\":\"mOhm\"},{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],\"package\":\"TO-220\",\"whyAlternative\":\"Direct replacement with same pinout\",\"differences\":\"Slightly higher Rds(on)\"}],\"importantNote\":\"Verify gate drive requirements\"}";
+var ALT_SEARCH_SYSTEM = "You are a senior hardware application engineer. Find EXACTLY 4 alternative parts for the given part number. All alternatives must meet or exceed the original part specs. Use different manufacturers. Only suggest parts that actually exist on Digi-Key. Sort by best drop-in compatibility first.\nRespond ONLY with raw JSON starting with {:\n{\"originalPart\":\"IRF540NPBF\",\"originalSpecs\":\"100V 33A TO-220\",\"alternatives\":[{\"partNumber\":\"FQP33N10\",\"manufacturer\":\"ON Semi\",\"type\":\"N-Channel MOSFET\",\"compatibility\":\"drop-in\",\"keySpecs\":[{\"label\":\"VDS\",\"value\":\"100\",\"unit\":\"V\"},{\"label\":\"ID\",\"value\":\"33\",\"unit\":\"A\"},{\"label\":\"RDS(on)\",\"value\":\"52\",\"unit\":\"mOhm\"},{\"label\":\"Package\",\"value\":\"TO-220\",\"unit\":\"\"}],\"package\":\"TO-220\",\"whyAlternative\":\"Direct replacement same pinout\",\"differences\":\"Slightly higher Rds(on)\"}],\"importantNote\":\"Verify gate drive\"}";
 
-var BOM_SYSTEM = "You are a senior hardware application engineer. Generate a complete Bill of Materials. Include only critical components: MOSFETs, ICs, drivers, gate drivers, specialized inductors, bulk capacitors, current sense resistors, crystals, connectors, optocouplers, diodes, sensors. NO generic 100nF caps, NO generic resistors unless critical. Use exact Digi-Key part numbers. Respond ONLY with raw JSON starting with {:\n{\"projectName\":\"24V 10A BLDC Motor Controller\",\"description\":\"Full H-bridge motor controller\",\"voltage\":\"24V\",\"power\":\"240W\",\"designNotes\":\"notes\",\"totalEstimate\":\"$45-65\",\"bomItems\":[{\"id\":1,\"function\":\"Gate Driver\",\"partNumber\":\"IR2184SPBF\",\"manufacturer\":\"Infineon\",\"description\":\"600V Half Bridge Gate Driver\",\"category\":\"IC\",\"quantity\":2,\"keySpecs\":\"600V 2A SO-8\",\"package\":\"SO-8\",\"priority\":\"critical\",\"unitPrice\":\"$1.20\",\"notes\":null}]}";
+var BOM_SYSTEM = "You are a senior hardware application engineer. Generate a complete Bill of Materials for the described system. Include ALL critical components needed: power semiconductors (MOSFETs, diodes, IGBTs), gate drivers, control ICs, voltage regulators, current sensors, specialized capacitors (bulk electrolytic, film), power inductors, optocouplers, crystals, connectors. NO generic 100nF bypass caps, NO generic pull-up resistors unless critical. Use exact Digi-Key part numbers. Include 4 keySpecs per part.\nRespond ONLY with raw JSON starting with {:\n{\"projectName\":\"name\",\"description\":\"sentence\",\"voltage\":\"V\",\"power\":\"W\",\"designNotes\":\"notes\",\"totalEstimate\":\"$X-Y\",\"bomItems\":[{\"id\":1,\"function\":\"High Side Gate Driver\",\"partNumber\":\"IR2184SPBF\",\"manufacturer\":\"Infineon\",\"description\":\"600V Half Bridge Gate Driver\",\"category\":\"IC\",\"quantity\":2,\"keySpecs\":\"600V 2A 200ns SO-8\",\"package\":\"SO-8\",\"priority\":\"critical\",\"unitPrice\":\"$1.20\",\"notes\":null}]}";
 
 // =============================================
 // HEALTH
@@ -256,19 +389,57 @@ app.get("/api/health", function(req, res) {
 });
 
 // =============================================
+// TRACK INTERACTION ENDPOINT
+// Called from frontend when user clicks anything
+// =============================================
+app.post("/api/track", async function(req, res) {
+  try {
+    var data = req.body;
+    if (!data.action || !data.partNumber) return res.json({ ok: false });
+    await trackInteraction(data);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Track error:", err.message);
+    res.json({ ok: false });
+  }
+});
+
+// =============================================
+// STOCK BULK ENDPOINT
+// For BOM stock loading in background
+// =============================================
+app.post("/api/stock-bulk", async function(req, res) {
+  try {
+    var partNumbers = req.body.partNumbers || [];
+    if (partNumbers.length === 0) return res.json({});
+    console.log("Bulk stock lookup for", partNumbers.length, "parts");
+    var stockPromises = partNumbers.map(function(pn) { return fetchStock(pn); });
+    var stockResults = await Promise.all(stockPromises);
+    var stockMap = {};
+    partNumbers.forEach(function(pn, i) { stockMap[pn] = stockResults[i]; });
+    res.json(stockMap);
+  } catch (err) {
+    console.error("Stock bulk error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================
 // MAIN CHAT ENDPOINT
 // =============================================
 app.post("/api/chat", async function(req, res) {
   try {
     var message = req.body.message;
     var history = req.body.history || [];
+    var sessionId = req.body.sessionId || "anon";
     var isCorrection = req.body.isCorrection || false;
     if (!message) return res.status(400).json({ error: "Message is required" });
     console.log("\n[CHAT]", message.substring(0, 80));
 
     var requiredSpecs = extractRequiredSpecs(message);
+    var componentType = detectComponentType(message);
 
-    // Classify intent with history context
+    // Classify intent
     var contextSummary = history.slice(-6).map(function(m) { return (m.role === "user" ? "User: " : "AI: ") + (m.content || "").substring(0, 150); }).join("\n");
     var intentInput = history.length > 0 ? "Previous conversation:\n" + contextSummary + "\n\nNew message: " + message : message;
     var intentResult = await callAI(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 300);
@@ -288,9 +459,7 @@ app.post("/api/chat", async function(req, res) {
     history.slice(-8).forEach(function(m) { if (m.content) fullMessages.push({ role: m.role, content: m.content }); });
     fullMessages.push({ role: "user", content: message });
 
-    // ==========================================
-    // ENGINEERING QUESTIONS - pure AI response
-    // ==========================================
+    // ENGINEERING QUESTIONS
     if (intent === "circuit_question" || intent === "calculation" || intent === "general" || intent === "correction") {
       var engSystem = ENGINEERING_SYSTEM;
       if (isCorrection) engSystem += " The user is correcting a previous response. Address their feedback directly.";
@@ -299,35 +468,39 @@ app.post("/api/chat", async function(req, res) {
       return res.json({ text: engResult.text, intent: intent, mode: "text" });
     }
 
-    // ==========================================
     // FIND ALTERNATIVES
-    // ==========================================
     if (intent === "find_alternatives") {
       var pn = detectedPN || extractPartNumber(message);
       if (!pn) return res.json({ text: "Could you specify the part number you want alternatives for?", intent: intent, mode: "question" });
 
-      var cacheKey = "alt_" + pn.toUpperCase();
-      var cached = getCached(aiCache, cacheKey);
-      if (cached) {
-        console.log("Alt cache hit for", pn);
-        return res.json(cached);
-      }
-
-      console.log("Finding alternatives for:", pn);
-      var altResult = await callAI(ALT_SEARCH_SYSTEM, [{ role: "user", content: "Find alternatives for " + pn + ". User context: " + message }], 3000);
+      var altResult = await callAI(ALT_SEARCH_SYSTEM, [{ role: "user", content: "Find alternatives for " + pn + ". Context: " + message }], 3000);
       var altData = altResult.text ? extractJSON(altResult.text) : null;
       if (!altData || !altData.alternatives) return res.json({ text: "Could not find alternatives for " + pn + ". Please try again.", intent: intent, mode: "text" });
 
-      // Fetch stock for all alternatives in parallel
       var altParts = altData.alternatives || [];
-      console.log("Fetching stock for", altParts.length, "alternatives...");
+
+      // Apply learned ranking
+      var learnedAlt = await getLearnedRankings("alternatives for " + pn, componentType);
+      if (learnedAlt.length > 0) altParts = applyLearnedRanking(altParts, learnedAlt);
+
+      // Fetch stock in parallel
       var altStockPromises = altParts.map(function(p) { return fetchStock(p.partNumber); });
       var altStockResults = await Promise.all(altStockPromises);
       var altStockMap = {};
       altParts.forEach(function(p, i) { altStockMap[p.partNumber] = altStockResults[i]; });
 
-      var altResponse = {
-        text: "Here are **" + altParts.length + " alternatives** for **" + pn + "** with real-time stock from Digi-Key and Mouser:",
+      // Sort by stock then learned score
+      altParts = altParts.sort(function(a, b) {
+        var aStock = altStockMap[a.partNumber] ? altStockMap[a.partNumber].totalStock : 0;
+        var bStock = altStockMap[b.partNumber] ? altStockMap[b.partNumber].totalStock : 0;
+        var aIn = aStock > 0 ? 1 : 0;
+        var bIn = bStock > 0 ? 1 : 0;
+        if (bIn !== aIn) return bIn - aIn;
+        return bStock - aStock;
+      });
+
+      return res.json({
+        text: "Here are **" + altParts.length + " alternatives** for **" + pn + "** with live stock from Digi-Key and Mouser:",
         mode: "alt",
         originalPart: altData.originalPart || pn,
         originalSpecs: altData.originalSpecs || "",
@@ -335,77 +508,73 @@ app.post("/api/chat", async function(req, res) {
         stockData: altStockMap,
         importantNote: altData.importantNote || null,
         intent: intent,
-      };
-      setCache(aiCache, cacheKey, altResponse, AI_TTL);
-      return res.json(altResponse);
+        sessionId: sessionId,
+        query: message,
+        componentType: componentType,
+        requiredVoltage: requiredSpecs.voltage || null,
+        requiredCurrent: requiredSpecs.current || null,
+      });
     }
 
-    // ==========================================
     // GENERATE BOM
-    // ==========================================
     if (intent === "generate_bom") {
-      var bomCacheKey = "bom_" + message.toLowerCase().trim().substring(0, 100);
+      var bomCacheKey = "bom_" + message.toLowerCase().trim().substring(0, 80);
       var bomCached = getCached(aiCache, bomCacheKey);
       if (bomCached) { console.log("BOM cache hit"); return res.json(bomCached); }
 
       console.log("Generating BOM...");
       var bomResult = await callAI(BOM_SYSTEM, fullMessages, 4000);
       var bomData = bomResult.text ? extractJSON(bomResult.text) : null;
-      if (!bomData || !bomData.bomItems) return res.json({ text: "Could you describe the application in more detail? For example: input voltage, output current, key requirements.", intent: intent, mode: "question" });
+      if (!bomData || !bomData.bomItems) return res.json({ text: "Could you describe the application in more detail?", intent: intent, mode: "question" });
 
-      // Don't fetch stock here - frontend will fetch in background
-      // This prevents timeout for large BOMs
+      // Return BOM immediately, stock loads in background via /api/stock-bulk
       bomData.stockData = {};
-
-      bomPNs.forEach(function(pn2, i) { bomStockMap[pn2] = bomStockResults[i]; });
-      bomData.stockData = bomStockMap;
-
       var bomResponse = Object.assign({
-        text: "Here is a **sourcing-ready BOM** for your **" + bomData.projectName + "** -- " + bomData.bomItems.length + " critical components with live stock from Digi-Key and Mouser:",
+        text: "Here is a complete BOM for your **" + bomData.projectName + "** -- " + bomData.bomItems.length + " critical components. Stock loading...",
         intent: intent,
+        loadStockInBackground: true,
       }, bomData);
       setCache(aiCache, bomCacheKey, bomResponse, AI_TTL);
       return res.json(bomResponse);
     }
 
-    // ==========================================
     // PART SEARCH
-    // AI picks correct parts, DigiKey+Mouser verify stock
-    // ==========================================
-    var searchCacheKey = "search_" + message.toLowerCase().trim().substring(0, 100);
+    var searchCacheKey = "search_" + message.toLowerCase().trim().substring(0, 80);
     var searchCached = getCached(aiCache, searchCacheKey);
+
+    var parts = null;
+
     if (searchCached) {
       console.log("Search cache hit");
-      // Refresh stock data even for cached results
-      var cachedPNs = (searchCached.results || []).map(function(p) { return p.partNumber; });
-      var freshStockPromises = cachedPNs.map(function(pn3) { return fetchStock(pn3); });
-      var freshStockResults = await Promise.all(freshStockPromises);
-      var freshStockMap = {};
-      cachedPNs.forEach(function(pn3, i) { freshStockMap[pn3] = freshStockResults[i]; });
-      searchCached.stockData = freshStockMap;
-      return res.json(searchCached);
+      parts = searchCached.results || [];
+    } else {
+      console.log("AI part search...");
+      var searchResult = await callAI(PART_SEARCH_SYSTEM, fullMessages, 3000);
+      var searchData = searchResult.text ? extractJSON(searchResult.text) : null;
+      if (!searchData || !searchData.results) {
+        var fallback = await callAI(ENGINEERING_SYSTEM, fullMessages, 1500);
+        return res.json({ text: fallback.text || "Could not find specific parts. Please provide more details.", intent: intent, mode: "text" });
+      }
+      parts = searchData.results || [];
+
+      // Cache AI results (before stock)
+      setCache(aiCache, searchCacheKey, searchData, AI_TTL);
     }
 
-    console.log("AI part search for:", message.substring(0, 60));
-    var searchResult = await callAI(PART_SEARCH_SYSTEM, fullMessages, 3000);
-    var searchData = searchResult.text ? extractJSON(searchResult.text) : null;
-
-    if (!searchData || !searchData.results || searchData.results.length === 0) {
-      // Fallback to engineering answer
-      var fallback = await callAI(ENGINEERING_SYSTEM, fullMessages, 1500);
-      return res.json({ text: fallback.text || "Could not find specific parts. Please provide more details about the specs you need.", intent: intent, mode: "text" });
+    // Apply learned ranking from Supabase
+    var learnedData = await getLearnedRankings(message, componentType);
+    if (learnedData.length > 0) {
+      console.log("Applying learned ranking from", learnedData.length, "historical interactions");
+      parts = applyLearnedRanking(parts, learnedData);
     }
 
-    // Fetch stock for all results in parallel
-    var parts = searchData.results || [];
-    console.log("AI suggested:", parts.map(function(p) { return p.partNumber; }).join(", "));
-    console.log("Fetching stock for", parts.length, "parts...");
+    // Fetch stock in parallel for all parts
     var stockPromises = parts.map(function(p) { return fetchStock(p.partNumber); });
     var stockResults = await Promise.all(stockPromises);
     var stockDataMap = {};
     parts.forEach(function(p, i) { stockDataMap[p.partNumber] = stockResults[i]; });
 
-    // Sort: in-stock first, then by rank order
+    // Sort: in-stock first, then by stock quantity
     parts = parts.sort(function(a, b) {
       var aStock = stockDataMap[a.partNumber] ? stockDataMap[a.partNumber].totalStock : 0;
       var bStock = stockDataMap[b.partNumber] ? stockDataMap[b.partNumber].totalStock : 0;
@@ -415,100 +584,42 @@ app.post("/api/chat", async function(req, res) {
       return bStock - aStock;
     });
 
-    var searchResponse = {
-      text: "Found **" + parts.length + " parts** for " + (searchData.interpretation || message.substring(0, 50)) + " -- with live stock from Digi-Key and Mouser:",
+    return res.json({
+      text: "Found **" + parts.length + " parts** with live stock from Digi-Key and Mouser:",
       mode: "search",
-      category: searchData.category || "",
-      interpretation: searchData.interpretation || "",
-      designTip: searchData.designTip || "",
+      category: (searchCached && searchCached.category) || componentType || "",
+      interpretation: (searchCached && searchCached.interpretation) || "",
+      designTip: (searchCached && searchCached.designTip) || "",
       results: parts,
       stockData: stockDataMap,
       intent: intent,
-    };
-
-    setCache(aiCache, searchCacheKey, searchResponse, AI_TTL);
-    return res.json(searchResponse);
+      sessionId: sessionId,
+      query: message,
+      componentType: componentType,
+      requiredVoltage: requiredSpecs.voltage || null,
+      requiredCurrent: requiredSpecs.current || null,
+    });
 
   } catch (err) {
     console.error("Chat error:", err.message, err.stack);
-    res.status(500).json({ error: "Server error: " + err.message });
+    if (!res.headersSent) res.status(500).json({ error: "Server error: " + err.message });
   }
 });
 
-// =============================================
-// EXCEL BOM UPLOAD
-// =============================================
-app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async function(req, res) {
+// Keep alive ping for Render free tier
+setInterval(async function() {
   try {
-    var fileContent = req.body.toString("utf8");
-    var lines = fileContent.split("\n").filter(function(l) { return l.trim(); });
-    if (lines.length === 0) return res.status(400).json({ error: "Empty file" });
-    var headers = lines[0].split(",").map(function(h) { return h.replace(/"/g, "").trim().toLowerCase(); });
-    var pnColIdx = 0;
-    var pnKeywords = ["part number","pn","mpn","part no","partno","part#","component","part_number"];
-    for (var ki = 0; ki < pnKeywords.length; ki++) { for (var hi = 0; hi < headers.length; hi++) { if (headers[hi].indexOf(pnKeywords[ki]) !== -1) { pnColIdx = hi; break; } } }
-    var partNumbers = [];
-    for (var li = 1; li < lines.length; li++) { var cols = lines[li].split(",").map(function(c) { return c.replace(/"/g, "").trim(); }); if (cols[pnColIdx]) partNumbers.push(cols[pnColIdx]); }
-    if (partNumbers.length === 0) return res.status(400).json({ error: "No part numbers found. Make sure your CSV has a Part Number column." });
-    console.log("Excel BOM:", partNumbers.length, "parts");
-
-    var results = [];
-    var limit = Math.min(partNumbers.length, 20);
-    for (var pi = 0; pi < limit; pi++) {
-      var pn = partNumbers[pi];
-      if (!pn) continue;
-      var stock = await fetchStock(pn);
-      var row = { partNumber: pn, description: "", category: "", keySpecs: "", stock: stock.totalStock || 0, bestPrice: stock.bestPrice || "", dkStock: stock.digikey ? stock.digikey.stock : 0, mousStock: stock.mouser ? stock.mouser.stock : 0, alt1: "", alt2: "", alt3: "" };
-
-      // Get alternatives from AI
-      try {
-        var altRes = await callAI(ALT_SEARCH_SYSTEM, [{ role: "user", content: "Find alternatives for " + pn }], 2000);
-        var altParsed = altRes.text ? extractJSON(altRes.text) : null;
-        if (altParsed && altParsed.alternatives) {
-          var alts = altParsed.alternatives.slice(0, 3);
-          if (alts[0]) row.alt1 = alts[0].partNumber + " (" + alts[0].manufacturer + ")";
-          if (alts[1]) row.alt2 = alts[1].partNumber + " (" + alts[1].manufacturer + ")";
-          if (alts[2]) row.alt3 = alts[2].partNumber + " (" + alts[2].manufacturer + ")";
-          if (alts[0] && alts[0].keySpecs) row.keySpecs = alts[0].keySpecs.map(function(s) { return s.label + "=" + s.value + s.unit; }).join("; ");
-        }
-      } catch (e) { console.error("Alt lookup failed for " + pn, e.message); }
-      results.push(row);
-    }
-
-    var csvHeaders = ["Part Number","Description","Category","Key Specs","Total Stock","Best Price","Digi-Key Stock","Mouser Stock","Alternative 1","Alternative 2","Alternative 3"];
-    var csvRows = results.map(function(r) { return [r.partNumber, r.description, r.category, r.keySpecs, r.stock, r.bestPrice, r.dkStock, r.mousStock, r.alt1, r.alt2, r.alt3]; });
-    var csv = [csvHeaders].concat(csvRows).map(function(row) { return row.map(function(c) { return '"' + String(c || "").replace(/"/g, '""') + '"'; }).join(","); }).join("\n");
-    res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", "attachment; filename=BOM_PartTensor.csv");
-    res.send(csv);
-  } catch (err) {
-    console.error("Excel BOM error:", err.message);
-    res.status(500).json({ error: "Failed to process file: " + err.message });
-  }
-});
-
-app.post("/api/stock-bulk", async function(req, res) {
-  try {
-    var partNumbers = req.body.partNumbers || [];
-    if (partNumbers.length === 0) return res.json({});
-    console.log("Bulk stock lookup for", partNumbers.length, "parts");
-    var stockPromises = partNumbers.map(function(pn) { return fetchStock(pn); });
-    var stockResults = await Promise.all(stockPromises);
-    var stockMap = {};
-    partNumbers.forEach(function(pn, i) { stockMap[pn] = stockResults[i]; });
-    res.json(stockMap);
-  } catch (err) {
-    console.error("Stock bulk error:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
+    var fetch = (await import("node-fetch")).default;
+    await fetch("https://parttensor-backend.onrender.com/api/health");
+    console.log("Keep-alive ping");
+  } catch (e) {}
+}, 14 * 60 * 1000);
 
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
   console.log("\nPartTensor backend running on port " + PORT);
   console.log("  GET  /api/health");
   console.log("  POST /api/chat");
-  console.log("  POST /api/excel-bom\n");
+  console.log("  POST /api/track      - track user interactions");
+  console.log("  POST /api/stock-bulk - bulk stock for BOM\n");
 });
