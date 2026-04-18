@@ -862,6 +862,31 @@ app.post("/api/feedback", async function(req, res) {
   }
 });
 
+app.post("/api/test-email", async function(req, res) {
+  try {
+    var fetch = (await import("node-fetch")).default;
+    var to = req.body.to;
+    var result = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + process.env.RESEND_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "noreply@parttensor.com",
+        to: to,
+        subject: "PartTensor Test Email",
+        html: "<h2>It works!</h2><p>PartTensor email is configured correctly.</p>",
+      }),
+    });
+    var data = await result.json();
+    console.log("Resend result:", JSON.stringify(data));
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
   console.log("\nPartTensor backend running on port " + PORT);
