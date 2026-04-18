@@ -655,6 +655,213 @@ setInterval(async function() {
   } catch (e) {}
 }, 14 * 60 * 1000);
 
+
+// =============================================
+// RAZORPAY PAYMENT
+// =============================================
+async function getRazorpayInstance() {
+  try {
+    var Razorpay = require("razorpay");
+    return new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+  } catch (e) {
+    console.error("Razorpay not installed:", e.message);
+    return null;
+  }
+}
+
+// Create Razorpay order
+app.post("/api/create-order", async function(req, res) {
+  try {
+    var plan = req.body.plan || "monthly";
+    var userId = req.body.userId;
+    var email = req.body.email;
+
+    var amounts = { monthly: 9900, yearly: 79900 }; // in paise
+    var amount = amounts[plan] || 9900;
+
+    var razorpay = await getRazorpayInstance();
+    if (!razorpay) {
+      return res.status(500).json({ error: "Payment not configured yet. Contact support." });
+    }
+
+    var order = await razorpay.orders.create({
+      amount: amount,
+      currency: "INR",
+      receipt: "pt_" + Date.now(),
+      notes: { userId: userId || "", email: email || "", plan: plan },
+    });
+
+    console.log("Razorpay order created:", order.id, "plan:", plan);
+    res.json({ orderId: order.id, amount: amount, currency: "INR", plan: plan });
+  } catch (err) {
+    console.error("Create order error:", err.message);
+    res.status(500).json({ error: "Could not create payment order: " + err.message });
+  }
+});
+
+// Verify payment and activate plan
+app.post("/api/verify-payment", async function(req, res) {
+  try {
+    var razorpayOrderId = req.body.razorpay_order_id;
+    var razorpayPaymentId = req.body.razorpay_payment_id;
+    var razorpaySignature = req.body.razorpay_signature;
+    var userId = req.body.userId;
+    var plan = req.body.plan || "monthly";
+
+    // Verify signature
+    var crypto = require("crypto");
+    var expectedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET || "")
+      .update(razorpayOrderId + "|" + razorpayPaymentId)
+      .digest("hex");
+
+    if (expectedSignature !== razorpaySignature) {
+      console.error("Payment signature mismatch");
+      return res.status(400).json({ error: "Payment verification failed" });
+    }
+
+    console.log("Payment verified:", razorpayPaymentId, "user:", userId, "plan:", plan);
+
+    // Calculate expiry
+    var expiresAt = new Date();
+    if (plan === "yearly") {
+      expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+    } else {
+      expiresAt.setMonth(expiresAt.getMonth() + 1);
+    }
+
+    // Update usage_limits to paid
+    if (userId) {
+      var existing = await supabaseQuery("GET", "usage_limits", null,
+        "identifier=eq." + encodeURIComponent(userId) + "&select=id"
+      );
+      if (existing && existing.length > 0) {
+        await supabaseQuery("PATCH", "usage_limits", {
+          plan: "paid",
+          message_count: 0,
+          last_reset: new Date().toISOString().split("T")[0],
+        }, "id=eq." + existing[0].id);
+      } else {
+        await supabaseQuery("POST", "usage_limits", {
+          identifier: userId,
+          identifier_type: "user",
+          message_count: 0,
+          last_reset: new Date().toISOString().split("T")[0],
+          plan: "paid",
+        });
+      }
+
+      // Record payment
+      await supabaseQuery("POST", "payments", {
+        user_id: userId,
+        plan: plan,
+        status: "active",
+        razorpay_payment_id: razorpayPaymentId,
+        razorpay_order_id: razorpayOrderId,
+        expires_at: expiresAt.toISOString(),
+      });
+    }
+
+    res.json({ success: true, plan: plan, expiresAt: expiresAt.toISOString() });
+  } catch (err) {
+    console.error("Verify payment error:", err.message);
+    res.status(500).json({ error: "Payment verification failed: " + err.message });
+  }
+});
+
+// Check user plan
+app.post("/api/check-plan", async function(req, res) {
+  try {
+    var userId = req.body.userId;
+    if (!userId) return res.json({ plan: "free" });
+
+    var result = await supabaseQuery("GET", "usage_limits", null,
+      "identifier=eq." + encodeURIComponent(userId) + "&select=plan,message_count"
+    );
+
+    if (result && result.length > 0) {
+      return res.json({ plan: result[0].plan || "free", messageCount: result[0].message_count || 0 });
+    }
+    res.json({ plan: "free", messageCount: 0 });
+  } catch (err) {
+    res.json({ plan: "free", messageCount: 0 });
+  }
+});
+
+// =============================================
+// PART FEEDBACK - thumbs up/down
+// =============================================
+app.post("/api/feedback", async function(req, res) {
+  try {
+    var partNumber = req.body.partNumber;
+    var manufacturer = req.body.manufacturer;
+    var query = req.body.query;
+    var feedback = req.body.feedback; // "good" or "bad"
+    var sessionId = req.body.sessionId;
+    var componentType = req.body.componentType;
+
+    if (!partNumber || !feedback) return res.status(400).json({ error: "partNumber and feedback required" });
+
+    console.log("Feedback:", feedback, partNumber, "query:", (query || "").substring(0, 40));
+
+    // Score: good = +5, bad = -10 (bad is stronger signal)
+    var score = feedback === "good" ? 5 : -10;
+    var queryNorm = (query || "").toLowerCase().trim().replace(/\s+/g, " ");
+
+    // Update part_performance
+    var existing = await supabaseQuery("GET", "part_performance", null,
+      "query_normalized=eq." + encodeURIComponent(queryNorm) + "&part_number=eq." + encodeURIComponent(partNumber) + "&select=id,total_score,negative_feedback,buy_clicks"
+    );
+
+    if (existing && existing.length > 0) {
+      var rec = existing[0];
+      var updates = {
+        total_score: (rec.total_score || 0) + score,
+        last_updated: new Date().toISOString(),
+      };
+      if (feedback === "bad") updates.negative_feedback = (rec.negative_feedback || 0) + 1;
+      await supabaseQuery("PATCH", "part_performance", updates, "id=eq." + rec.id);
+    } else {
+      await supabaseQuery("POST", "part_performance", {
+        query_normalized: queryNorm,
+        component_type: componentType || "",
+        part_number: partNumber,
+        manufacturer: manufacturer || "",
+        total_score: score,
+        negative_feedback: feedback === "bad" ? 1 : 0,
+        buy_clicks: 0,
+        datasheet_clicks: 0,
+        card_clicks: 0,
+        alternative_searches: 0,
+        last_updated: new Date().toISOString(),
+      });
+    }
+
+    // If bad feedback - also flag in part_catalog so it won't be suggested
+    if (feedback === "bad") {
+      var catalogEntry = await supabaseQuery("GET", "part_catalog", null,
+        "part_number=eq." + encodeURIComponent(partNumber) + "&select=id,negative_count"
+      );
+      if (catalogEntry && catalogEntry.length > 0) {
+        var negCount = (catalogEntry[0].negative_count || 0) + 1;
+        await supabaseQuery("PATCH", "part_catalog", {
+          negative_count: negCount,
+          // Flag as suppress if 3+ bad feedbacks
+          suppressed: negCount >= 3 ? true : false,
+        }, "id=eq." + catalogEntry[0].id);
+      }
+    }
+
+    res.json({ ok: true, feedback: feedback, partNumber: partNumber });
+  } catch (err) {
+    console.error("Feedback error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
   console.log("\nPartTensor backend running on port " + PORT);
