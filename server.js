@@ -433,8 +433,48 @@ app.post("/api/chat", async function(req, res) {
     var history = req.body.history || [];
     var sessionId = req.body.sessionId || "anon";
     var isCorrection = req.body.isCorrection || false;
+    var userId = req.body.userId || null;
+    var plan = req.body.plan || "guest";
     if (!message) return res.status(400).json({ error: "Message is required" });
     console.log("\n[CHAT]", message.substring(0, 80));
+
+    // CHECK USAGE LIMITS
+    var GUEST_LIMIT = 10;
+    var FREE_LIMIT = 50;
+    var identifier = userId || (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown");
+    var identifierType = userId ? "user" : "ip";
+
+    if (plan !== "paid") {
+      try {
+        var today = new Date().toISOString().split("T")[0];
+        var usageRes = await supabaseQuery("GET", "usage_limits", null,
+          "identifier=eq." + encodeURIComponent(identifier) + "&select=id,message_count,last_reset,plan"
+        );
+        var usage = usageRes && usageRes[0];
+        var currentCount = 0;
+
+        if (usage) {
+          if (usage.last_reset !== today) {
+            await supabaseQuery("PATCH", "usage_limits", { message_count: 1, last_reset: today }, "id=eq." + usage.id);
+            currentCount = 1;
+          } else {
+            currentCount = (usage.message_count || 0) + 1;
+            var limit = identifierType === "user" ? FREE_LIMIT : GUEST_LIMIT;
+            if (currentCount > limit) {
+              return res.json({ error: "Daily limit reached", limitReached: true, plan: plan });
+            }
+            await supabaseQuery("PATCH", "usage_limits", { message_count: currentCount }, "id=eq." + usage.id);
+          }
+        } else {
+          await supabaseQuery("POST", "usage_limits", { identifier: identifier, identifier_type: identifierType, message_count: 1, last_reset: today, plan: plan });
+          currentCount = 1;
+        }
+        console.log("Usage:", identifier.substring(0, 20), "count:", currentCount, "plan:", plan);
+      } catch (e) {
+        console.error("Usage check failed:", e.message);
+        // Don't block if usage check fails
+      }
+    }
 
     var requiredSpecs = extractRequiredSpecs(message);
     var componentType = detectComponentType(message);
