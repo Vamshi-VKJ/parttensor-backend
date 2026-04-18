@@ -873,7 +873,7 @@ app.post("/api/test-email", async function(req, res) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "noreply@parttensor.com",
+        from: "onboarding@resend.dev",
         to: to,
         subject: "PartTensor Test Email",
         html: "<h2>It works!</h2><p>PartTensor email is configured correctly.</p>",
