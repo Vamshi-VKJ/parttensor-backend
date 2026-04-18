@@ -17,18 +17,19 @@ app.use(express.json({ limit: "10mb" }));
 // PLAN LIMITS
 // =============================================
 var PLANS = {
-  guest:      { messages: 5,   bom: false, excel: false, history: false, alternatives: 3,  api: false },
-  free:       { messages: 20,  bom: false, excel: false, history: true,  alternatives: 5,  api: false },
-  pro:        { messages: 9999,bom: true,  excel: true,  history: true,  alternatives: 999,api: false },
-  team:       { messages: 9999,bom: true,  excel: true,  history: true,  alternatives: 999,api: false },
-  enterprise: { messages: 9999,bom: true,  excel: true,  history: true,  alternatives: 999,api: true  },
+  guest:      { messages: 5,    bom: false, excel: false, history: false, api: false },
+  free:       { messages: 20,   bom: false, excel: false, history: true,  api: false },
+  pro:        { messages: 9999, bom: true,  excel: true,  history: true,  api: false },
+  team:       { messages: 9999, bom: true,  excel: true,  history: true,  api: false },
+  enterprise: { messages: 9999, bom: true,  excel: true,  history: true,  api: true  },
+  paid:       { messages: 9999, bom: true,  excel: true,  history: true,  api: false },
 };
 
 var PRICES = {
-  pro_monthly:  19900,  // Rs 199
-  pro_yearly:   179900, // Rs 1799
-  team_monthly: 99900,  // Rs 999
-  team_yearly:  899900, // Rs 8999
+  pro_monthly:  19900,
+  pro_yearly:   179900,
+  team_monthly: 99900,
+  team_yearly:  899900,
 };
 
 var stockCache = {};
@@ -56,28 +57,73 @@ async function supabaseQuery(method, table, body, params) {
     if (params) url += "?" + params;
     var res = await fetch(url, {
       method: method || "GET",
-      headers: { "Content-Type": "application/json", "apikey": process.env.SUPABASE_KEY, "Authorization": "Bearer " + process.env.SUPABASE_KEY, "Prefer": method === "POST" ? "return=minimal" : "return=representation" },
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": process.env.SUPABASE_KEY,
+        "Authorization": "Bearer " + process.env.SUPABASE_KEY,
+        "Prefer": method === "POST" ? "return=minimal" : "return=representation",
+      },
       body: body ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) { var err = await res.text(); console.error("Supabase error:", res.status, err.substring(0, 200)); return null; }
+    if (!res.ok) {
+      var err = await res.text();
+      console.error("Supabase error:", res.status, err.substring(0, 200));
+      return null;
+    }
     if (method === "POST" && res.status === 201) return true;
     var text = await res.text();
     return text ? JSON.parse(text) : true;
   } catch (e) { console.error("Supabase failed:", e.message); return null; }
 }
 
-async function getUserPlan(userId) {
-  if (!userId) return "guest";
+// =============================================
+// BEHAVIOUR TRACKING
+// =============================================
+async function trackSearch(userId, sessionId, plan, query, componentType, resultsCount, source) {
   try {
-    var result = await supabaseQuery("GET", "usage_limits", null, "identifier=eq." + encodeURIComponent(userId) + "&select=plan");
-    if (result && result.length > 0) return result[0].plan || "free";
-    return "free";
-  } catch (e) { return "free"; }
+    // Update user session
+    var today = new Date().toISOString().split("T")[0];
+    if (sessionId) {
+      var existing = await supabaseQuery("GET", "user_sessions", null, "session_id=eq." + encodeURIComponent(sessionId) + "&select=id,searches_count");
+      if (existing && existing.length > 0) {
+        await supabaseQuery("PATCH", "user_sessions", { searches_count: (existing[0].searches_count || 0) + 1, last_active: new Date().toISOString(), plan: plan || "guest" }, "id=eq." + existing[0].id);
+      } else {
+        await supabaseQuery("POST", "user_sessions", { user_id: userId || null, session_id: sessionId, plan: plan || "guest", searches_count: 1, last_active: new Date().toISOString() });
+      }
+    }
+    // Update daily analytics
+    var analytics = await supabaseQuery("GET", "daily_analytics", null, "date=eq." + today + "&select=id,total_searches,total_users,guest_searches,free_searches,pro_searches,top_queries");
+    var planField = (plan === "pro" || plan === "paid" || plan === "team" || plan === "enterprise") ? "pro_searches" : plan === "free" ? "free_searches" : "guest_searches";
+    if (analytics && analytics.length > 0) {
+      var rec = analytics[0];
+      var topQueries = rec.top_queries || {};
+      topQueries[query] = (topQueries[query] || 0) + 1;
+      var updates = { total_searches: (rec.total_searches || 0) + 1, top_queries: topQueries };
+      updates[planField] = (rec[planField] || 0) + 1;
+      await supabaseQuery("PATCH", "daily_analytics", updates, "id=eq." + rec.id);
+    } else {
+      var newRec = { date: today, total_searches: 1, total_users: 1, guest_searches: 0, free_searches: 0, pro_searches: 0, top_queries: {} };
+      newRec[planField] = 1;
+      newRec.top_queries[query] = 1;
+      await supabaseQuery("POST", "daily_analytics", newRec);
+    }
+  } catch (e) { console.error("trackSearch failed:", e.message); }
 }
 
 async function trackInteraction(data) {
   try {
-    await supabaseQuery("POST", "interactions", { session_id: data.sessionId || "anon", query: data.query || "", component_type: data.componentType || "", required_voltage: data.requiredVoltage || null, required_current: data.requiredCurrent || null, part_number: data.partNumber || "", manufacturer: data.manufacturer || "", action: data.action || "", position: data.position || null, total_results: data.totalResults || null });
+    await supabaseQuery("POST", "interactions", {
+      session_id: data.sessionId || "anon",
+      query: data.query || "",
+      component_type: data.componentType || "",
+      required_voltage: data.requiredVoltage || null,
+      required_current: data.requiredCurrent || null,
+      part_number: data.partNumber || "",
+      manufacturer: data.manufacturer || "",
+      action: data.action || "",
+      position: data.position || null,
+      total_results: data.totalResults || null,
+    });
     var score = 0;
     if (data.action === "buy_dk" || data.action === "buy_mouser") score = 10;
     else if (data.action === "datasheet") score = 5;
@@ -85,7 +131,11 @@ async function trackInteraction(data) {
     else if (data.action === "negative_feedback") score = -8;
     if (data.position && score > 0) score += (data.position - 1) * 2;
     var queryNorm = (data.query || "").toLowerCase().trim().replace(/\s+/g, " ");
-    var existing = await supabaseQuery("GET", "part_performance", null, "query_normalized=eq." + encodeURIComponent(queryNorm) + "&part_number=eq." + encodeURIComponent(data.partNumber || "") + "&select=id,buy_clicks,datasheet_clicks,card_clicks,total_score");
+    var existing = await supabaseQuery("GET", "part_performance", null,
+      "query_normalized=eq." + encodeURIComponent(queryNorm) +
+      "&part_number=eq." + encodeURIComponent(data.partNumber || "") +
+      "&select=id,buy_clicks,datasheet_clicks,card_clicks,total_score,search_count"
+    );
     if (existing && existing.length > 0) {
       var rec = existing[0];
       var updates = { total_score: (rec.total_score || 0) + score, last_updated: new Date().toISOString() };
@@ -94,17 +144,75 @@ async function trackInteraction(data) {
       else if (data.action === "card_click") updates.card_clicks = (rec.card_clicks || 0) + 1;
       await supabaseQuery("PATCH", "part_performance", updates, "id=eq." + rec.id);
     } else {
-      await supabaseQuery("POST", "part_performance", { query_normalized: queryNorm, component_type: data.componentType || "", required_voltage: data.requiredVoltage || null, required_current: data.requiredCurrent || null, part_number: data.partNumber || "", manufacturer: data.manufacturer || "", buy_clicks: (data.action === "buy_dk" || data.action === "buy_mouser") ? 1 : 0, datasheet_clicks: data.action === "datasheet" ? 1 : 0, card_clicks: data.action === "card_click" ? 1 : 0, alternative_searches: 0, negative_feedback: 0, total_score: score, last_updated: new Date().toISOString() });
+      await supabaseQuery("POST", "part_performance", {
+        query_normalized: queryNorm,
+        component_type: data.componentType || "",
+        required_voltage: data.requiredVoltage || null,
+        required_current: data.requiredCurrent || null,
+        part_number: data.partNumber || "",
+        manufacturer: data.manufacturer || "",
+        buy_clicks: (data.action === "buy_dk" || data.action === "buy_mouser") ? 1 : 0,
+        datasheet_clicks: data.action === "datasheet" ? 1 : 0,
+        card_clicks: data.action === "card_click" ? 1 : 0,
+        alternative_searches: 0,
+        negative_feedback: 0,
+        total_score: score,
+        search_count: 0,
+        last_updated: new Date().toISOString(),
+      });
     }
   } catch (e) { console.error("trackInteraction failed:", e.message); }
+}
+
+async function updatePartSearchCount(queryNorm, partNumber, position) {
+  try {
+    var existing = await supabaseQuery("GET", "part_performance", null,
+      "query_normalized=eq." + encodeURIComponent(queryNorm) +
+      "&part_number=eq." + encodeURIComponent(partNumber) +
+      "&select=id,search_count,avg_position"
+    );
+    if (existing && existing.length > 0) {
+      var rec = existing[0];
+      var sc = (rec.search_count || 0) + 1;
+      var avgPos = ((rec.avg_position || position) * (sc - 1) + position) / sc;
+      await supabaseQuery("PATCH", "part_performance", {
+        search_count: sc,
+        avg_position: Math.round(avgPos * 10) / 10,
+        last_search: new Date().toISOString(),
+      }, "id=eq." + rec.id);
+    } else {
+      await supabaseQuery("POST", "part_performance", {
+        query_normalized: queryNorm,
+        part_number: partNumber,
+        search_count: 1,
+        avg_position: position,
+        total_score: 0,
+        buy_clicks: 0,
+        datasheet_clicks: 0,
+        card_clicks: 0,
+        alternative_searches: 0,
+        negative_feedback: 0,
+        last_search: new Date().toISOString(),
+        last_updated: new Date().toISOString(),
+      });
+    }
+  } catch (e) { /* non-critical */ }
 }
 
 async function getLearnedRankings(query, componentType) {
   try {
     var queryNorm = (query || "").toLowerCase().trim().replace(/\s+/g, " ");
-    var results = await supabaseQuery("GET", "part_performance", null, "query_normalized=eq." + encodeURIComponent(queryNorm) + "&total_score=gt.0&order=total_score.desc&limit=10&select=part_number,total_score");
+    var results = await supabaseQuery("GET", "part_performance", null,
+      "query_normalized=eq." + encodeURIComponent(queryNorm) +
+      "&total_score=gt.0&order=total_score.desc&limit=10&select=part_number,total_score,buy_clicks"
+    );
     if (!results || results.length === 0) {
-      if (componentType) results = await supabaseQuery("GET", "part_performance", null, "component_type=eq." + encodeURIComponent(componentType) + "&total_score=gt.5&order=total_score.desc&limit=10&select=part_number,total_score");
+      if (componentType) {
+        results = await supabaseQuery("GET", "part_performance", null,
+          "component_type=eq." + encodeURIComponent(componentType) +
+          "&total_score=gt.5&order=total_score.desc&limit=10&select=part_number,total_score,buy_clicks"
+        );
+      }
     }
     return results || [];
   } catch (e) { return []; }
@@ -114,7 +222,20 @@ function applyLearnedRanking(parts, learnedData) {
   if (!learnedData || learnedData.length === 0) return parts;
   var scoreMap = {};
   learnedData.forEach(function(r) { scoreMap[r.part_number] = r.total_score; });
-  return parts.slice().sort(function(a, b) { return (scoreMap[b.partNumber] || 0) - (scoreMap[a.partNumber] || 0); });
+  return parts.slice().sort(function(a, b) {
+    return (scoreMap[b.partNumber] || 0) - (scoreMap[a.partNumber] || 0);
+  });
+}
+
+async function getUserPlan(userId) {
+  if (!userId) return "guest";
+  try {
+    var result = await supabaseQuery("GET", "usage_limits", null,
+      "identifier=eq." + encodeURIComponent(userId) + "&select=plan"
+    );
+    if (result && result.length > 0) return result[0].plan || "free";
+    return "free";
+  } catch (e) { return "free"; }
 }
 
 // =============================================
@@ -130,10 +251,19 @@ async function getDigikeyToken() {
     var res = await fetch("https://api.digikey.com/v1/oauth2/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "client_credentials", client_id: process.env.DIGIKEY_CLIENT_ID, client_secret: process.env.DIGIKEY_CLIENT_SECRET }),
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: process.env.DIGIKEY_CLIENT_ID,
+        client_secret: process.env.DIGIKEY_CLIENT_SECRET,
+      }),
     });
     var data = await res.json();
-    if (data.access_token) { digikeyToken = data.access_token; digikeyTokenExpiry = Date.now() + (data.expires_in - 60) * 1000; console.log("DigiKey token refreshed"); return digikeyToken; }
+    if (data.access_token) {
+      digikeyToken = data.access_token;
+      digikeyTokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
+      console.log("DigiKey token refreshed");
+      return digikeyToken;
+    }
     return null;
   } catch (e) { console.error("DigiKey token failed:", e.message); return null; }
 }
@@ -145,23 +275,30 @@ async function lookupDigikey(mpn) {
     var fetch = (await import("node-fetch")).default;
     var token = await getDigikeyToken();
     if (!token) return null;
-    var res = await fetch("https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn) + "/productdetails", { method: "GET", headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } });
+    var res = await fetch(
+      "https://api.digikey.com/products/v4/search/" + encodeURIComponent(mpn) + "/productdetails",
+      { method: "GET", headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD" } }
+    );
     if (!res.ok) {
-      var res2 = await fetch("https://api.digikey.com/products/v4/search/keyword", { method: "POST", headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD", "Content-Type": "application/json" }, body: JSON.stringify({ Keywords: mpn, Limit: 3, Offset: 0 }) });
+      var res2 = await fetch("https://api.digikey.com/products/v4/search/keyword", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + token, "X-DIGIKEY-Client-Id": process.env.DIGIKEY_CLIENT_ID, "X-DIGIKEY-Locale-Site": "US", "X-DIGIKEY-Locale-Language": "en", "X-DIGIKEY-Locale-Currency": "USD", "Content-Type": "application/json" },
+        body: JSON.stringify({ Keywords: mpn, Limit: 3, Offset: 0 }),
+      });
       if (!res2.ok) return null;
       var d2 = await res2.json();
       var prods = d2.Products || [];
       if (prods.length === 0) return null;
       var best2 = prods.reduce(function(a, b) { return (b.QuantityAvailable || 0) > (a.QuantityAvailable || 0) ? b : a; });
       var p2 = best2.UnitPrice || (best2.StandardPricing && best2.StandardPricing[0] && best2.StandardPricing[0].UnitPrice) || null;
-      var r2 = { found: true, stock: best2.QuantityAvailable || 0, price: p2 ? "$" + parseFloat(p2).toFixed(3) : null, url: best2.ProductUrl || "", matchedMPN: best2.ManufacturerProductNumber || mpn, parameters: best2.Parameters || [] };
+      var r2 = { found: true, stock: best2.QuantityAvailable || 0, price: p2 ? "$" + parseFloat(p2).toFixed(3) : null, url: best2.ProductUrl || "", matchedMPN: best2.ManufacturerProductNumber || mpn };
       setCache(stockCache, "dk_" + mpn, r2, STOCK_TTL);
       return r2;
     }
     var data = await res.json();
     var product = data.Product || data;
     var unitPrice = product.UnitPrice || (product.StandardPricing && product.StandardPricing[0] && product.StandardPricing[0].UnitPrice) || null;
-    var result = { found: true, stock: product.QuantityAvailable || 0, price: unitPrice ? "$" + parseFloat(unitPrice).toFixed(3) : null, url: product.ProductUrl || "", matchedMPN: product.ManufacturerProductNumber || mpn, parameters: product.Parameters || [] };
+    var result = { found: true, stock: product.QuantityAvailable || 0, price: unitPrice ? "$" + parseFloat(unitPrice).toFixed(3) : null, url: product.ProductUrl || "", matchedMPN: product.ManufacturerProductNumber || mpn };
     setCache(stockCache, "dk_" + mpn, result, STOCK_TTL);
     return result;
   } catch (e) { console.error("DK lookup failed:", mpn, e.message); return null; }
@@ -172,11 +309,17 @@ async function lookupMouser(mpn) {
     var cached = getCached(stockCache, "mo_" + mpn);
     if (cached) return cached;
     var fetch = (await import("node-fetch")).default;
-    var res = await fetch("https://api.mouser.com/api/v1/search/partnumber?apiKey=" + process.env.MOUSER_API_KEY, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: mpn, partSearchOptions: "Begins With" } }) });
+    var res = await fetch("https://api.mouser.com/api/v1/search/partnumber?apiKey=" + process.env.MOUSER_API_KEY, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: mpn, partSearchOptions: "Begins With" } }),
+    });
     var data = res.ok ? await res.json() : null;
     var parts = (data && data.SearchResults && data.SearchResults.Parts) || [];
     if (parts.length === 0) return null;
-    var best = parts.reduce(function(a, b) { return (parseInt((b.Availability || "0").replace(/[^0-9]/g, "")) || 0) > (parseInt((a.Availability || "0").replace(/[^0-9]/g, "")) || 0) ? b : a; });
+    var best = parts.reduce(function(a, b) {
+      return (parseInt((b.Availability || "0").replace(/[^0-9]/g, "")) || 0) > (parseInt((a.Availability || "0").replace(/[^0-9]/g, "")) || 0) ? b : a;
+    });
     var stock = parseInt((best.Availability || "0").replace(/[^0-9]/g, "")) || 0;
     var price = best.PriceBreaks && best.PriceBreaks[0] && best.PriceBreaks[0].Price;
     var result = { found: stock > 0, stock: stock, price: price || null, url: best.ProductDetailUrl || "" };
@@ -200,94 +343,106 @@ async function fetchStock(mpn) {
 }
 
 // =============================================
-// GEMINI - Real-time part search
+// GEMINI - Suggests part numbers using Google Search
+// DigiKey only used for stock + price verification
 // =============================================
 async function searchPartsWithGemini(query, componentType, requiredSpecs) {
   try {
     var fetch = (await import("node-fetch")).default;
     console.log("Gemini search:", query);
+
     var specsHint = "";
     if (requiredSpecs.voltage) specsHint += " voltage>=" + requiredSpecs.voltage + "V";
     if (requiredSpecs.current) specsHint += " current>=" + requiredSpecs.current + "A";
     if (requiredSpecs.capacitanceUF) specsHint += " capacitance~" + requiredSpecs.capacitanceUF + "uF";
     if (requiredSpecs.inductanceUH) specsHint += " inductance~" + requiredSpecs.inductanceUH + "uH";
 
-    var prompt = "Search DigiKey and Mouser right now for: " + query + (specsHint ? " [Required:" + specsHint + "]" : "") + "\n\nFind EXACTLY 4 real parts currently in stock on DigiKey or Mouser. Rules:\n1. Use EXACT manufacturer part number (MPN) as on DigiKey\n2. Specs must meet requirements\n3. Only in-stock parts\n4. Reputable manufacturers only: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet, Bourns, Nexperia, Microchip\n\nReturn ONLY valid JSON, no markdown:\n{\"category\":\"type\",\"interpretation\":\"summary\",\"designTip\":\"tip\",\"results\":[{\"partNumber\":\"EXACT_MPN\",\"manufacturer\":\"Mfr\",\"type\":\"Type\",\"keySpecs\":[{\"label\":\"L\",\"value\":\"V\",\"unit\":\"U\"},{\"label\":\"L2\",\"value\":\"V2\",\"unit\":\"U2\"},{\"label\":\"L3\",\"value\":\"V3\",\"unit\":\"U3\"},{\"label\":\"Package\",\"value\":\"PKG\",\"unit\":\"\"}],\"package\":\"PKG\",\"rank\":\"top\",\"aeComment\":\"Why good choice\",\"caution\":null,\"applications\":[\"app\"]}]}";
+    var prompt = [
+      "You are a senior hardware application engineer sourcing electronic components.",
+      "",
+      "REQUEST: " + query + (specsHint ? "\nREQUIRED SPECS: " + specsHint : ""),
+      "",
+      "Search DigiKey.com and Mouser.com RIGHT NOW to find the best 4 parts for this request.",
+      "Use Google Search to find current listings, datasheets, and availability.",
+      "",
+      "STRICT RULES:",
+      "1. Return EXACTLY 4 parts from 4 DIFFERENT manufacturers",
+      "2. ALL parts MUST meet or exceed required specs",
+      "3. Use the EXACT MPN as listed on DigiKey - search to verify it exists",
+      "4. For relays: coil voltage must MATCH exactly, contact current must be >=",
+      "5. For MOSFETs: Vds >= requested voltage, Id >= requested current",
+      "6. For capacitors: value within 20% of requested",
+      "7. Prefer in-stock parts",
+      "8. rank: first=top, second=good, third=alternative, fourth=alternative",
+      "9. aeComment: explain why this part fits with actual spec numbers",
+      "10. Only manufacturers: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas,",
+      "    Nexperia, Microchip, Omron, TE Connectivity, Panasonic, Murata, Wurth,",
+      "    Kemet, Bourns, Littelfuse, Diodes Inc, IXYS, Semtech",
+      "",
+      "Return ONLY raw JSON with no markdown, no explanation:",
+      "{\"category\":\"component category\",\"interpretation\":\"one sentence what user needs\",",
+      "\"designTip\":\"one specific practical tip for this application\",",
+      "\"results\":[{",
+      "  \"partNumber\":\"EXACT_MPN_FROM_DIGIKEY\",",
+      "  \"manufacturer\":\"Manufacturer Name\",",
+      "  \"type\":\"Component Type\",",
+      "  \"keySpecs\":[",
+      "    {\"label\":\"Main Rating\",\"value\":\"value\",\"unit\":\"unit\"},",
+      "    {\"label\":\"Second Spec\",\"value\":\"value\",\"unit\":\"unit\"},",
+      "    {\"label\":\"Third Spec\",\"value\":\"value\",\"unit\":\"unit\"},",
+      "    {\"label\":\"Package\",\"value\":\"PKG\",\"unit\":\"\"}",
+      "  ],",
+      "  \"package\":\"package\",",
+      "  \"rank\":\"top\",",
+      "  \"aeComment\":\"Specific reason with actual spec values why this fits the application\",",
+      "  \"caution\":null,",
+      "  \"applications\":[\"app1\",\"app2\"]",
+      "}]}",
+    ].join("\n");
 
-    var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + process.env.GEMINI_API_KEY, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        tools: [{ google_search: {} }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 },
-      }),
-    });
+    var res = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + process.env.GEMINI_API_KEY,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          tools: [{ google_search: {} }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
+        }),
+      }
+    );
 
-    if (!res.ok) { var errText = await res.text(); console.error("Gemini error:", res.status, errText.substring(0, 300)); return null; }
+    if (!res.ok) {
+      var errText = await res.text();
+      console.error("Gemini error:", res.status, errText.substring(0, 300));
+      return null;
+    }
+
     var data = await res.json();
     var candidates = data.candidates || [];
-    if (candidates.length === 0) return null;
-    var parts2 = candidates[0].content && candidates[0].content.parts || [];
+    if (candidates.length === 0) { console.error("Gemini no candidates"); return null; }
+    var parts2 = (candidates[0].content && candidates[0].content.parts) || [];
     var text = parts2.map(function(p) { return p.text || ""; }).join("");
-    console.log("Gemini response (first 400):", text.substring(0, 400));
+    console.log("Gemini response (500):", text.substring(0, 500));
+
     var clean = text.replace(/```json/gi, "").replace(/```/g, "").trim();
     var depth = 0, start = -1, end = -1;
     for (var i = 0; i < clean.length; i++) {
       if (clean[i] === "{") { if (depth === 0) start = i; depth++; }
       else if (clean[i] === "}") { depth--; if (depth === 0) { end = i; break; } }
     }
-    if (start === -1 || end === -1) return null;
+    if (start === -1 || end === -1) { console.error("No JSON in Gemini response"); return null; }
+
     try {
       var parsed = JSON.parse(clean.substring(start, end + 1));
       if (parsed && parsed.results && parsed.results.length > 0) {
-        console.log("Gemini found:", parsed.results.map(function(p) { return p.partNumber; }).join(", "));
+        console.log("Gemini suggested:", parsed.results.map(function(p) { return p.partNumber; }).join(", "));
         return parsed;
       }
       return null;
     } catch (e) { console.error("Gemini JSON parse failed:", e.message); return null; }
   } catch (e) { console.error("Gemini failed:", e.message); return null; }
-}
-
-// =============================================
-// VALIDATE WITH DIGIKEY
-// =============================================
-async function validateWithDigiKey(parts, requiredSpecs) {
-  if (!parts || parts.length === 0) return parts;
-  console.log("Validating", parts.length, "parts with DigiKey...");
-  var validated = [];
-  for (var i = 0; i < parts.length; i++) {
-    var part = parts[i];
-    var dkResult = await lookupDigikey(part.partNumber);
-    if (!dkResult) { console.log("  NOT FOUND:", part.partNumber); continue; }
-    if (dkResult.matchedMPN && dkResult.matchedMPN !== part.partNumber) { console.log("  MPN fix:", part.partNumber, "->", dkResult.matchedMPN); part.partNumber = dkResult.matchedMPN; }
-    var params = dkResult.parameters || [];
-    var realVoltage = null, realCurrent = null;
-    for (var j = 0; j < params.length; j++) {
-      var name = (params[j].Parameter || "").toLowerCase();
-      var val = parseFloat(params[j].Value);
-      if (isNaN(val)) continue;
-      if (name === "vds" || name === "vce" || name === "vrrm" || (name.includes("voltage") && !name.includes("threshold") && !name.includes("gate") && !name.includes("input"))) { if (!realVoltage) realVoltage = val; }
-      if (name === "id" || name === "ic" || name === "iout" || name === "if" || (name.includes("current") && (name.includes("continuous") || name.includes("rated") || name.includes("contact")))) { if (!realCurrent) realCurrent = val; }
-    }
-    var valid = true;
-    if (requiredSpecs.voltage && realVoltage && realVoltage < requiredSpecs.voltage * 0.95) { console.log("  REJECTED voltage:", part.partNumber, realVoltage + "V"); valid = false; }
-    if (requiredSpecs.current && realCurrent && realCurrent < requiredSpecs.current * 0.95) { console.log("  REJECTED current:", part.partNumber, realCurrent + "A"); valid = false; }
-    if (!valid) continue;
-    if (realVoltage && part.keySpecs) {
-      for (var k = 0; k < part.keySpecs.length; k++) {
-        var label = (part.keySpecs[k].label || "").toLowerCase();
-        if (label === "vds" || label === "vce" || label === "vrrm") part.keySpecs[k].value = String(realVoltage);
-        if ((label === "id" || label === "ic") && realCurrent) part.keySpecs[k].value = String(realCurrent);
-      }
-    }
-    part._dkStock = dkResult.stock;
-    part._validated = true;
-    console.log("  OK:", part.partNumber, "stock:", dkResult.stock);
-    validated.push(part);
-  }
-  console.log("Validated: " + validated.length + "/" + parts.length);
-  return validated;
 }
 
 // =============================================
@@ -380,7 +535,7 @@ var INTENT_SYSTEM = "You classify hardware engineering queries. RULES:\n1. ANY m
 
 var ENGINEERING_SYSTEM = "You are PartTensor, a senior hardware application engineer AI. Help engineers with component selection, circuit design, calculations, and troubleshooting. Be direct, technical and precise. Format with **bold headers** and - bullet points.";
 
-var CLAUDE_PART_SYSTEM = "You are a senior hardware application engineer. Suggest EXACTLY 4 real electronic parts.\nRULES: Only parts that EXIST on DigiKey. Meet or exceed voltage and current ratings. For relays match coil voltage exactly. Use: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet. 4 keySpecs each, first is main rating. Self-check before responding.\nRespond ONLY with raw JSON:\n{\"category\":\"Type\",\"interpretation\":\"summary\",\"designTip\":\"tip\",\"results\":[{\"partNumber\":\"MPN\",\"manufacturer\":\"Mfr\",\"type\":\"Type\",\"keySpecs\":[{\"label\":\"L\",\"value\":\"V\",\"unit\":\"U\"}],\"package\":\"PKG\",\"rank\":\"top\",\"aeComment\":\"comment\",\"caution\":null,\"applications\":[\"app\"]}]}";
+var CLAUDE_PART_SYSTEM = "You are a senior hardware application engineer. Suggest EXACTLY 4 real electronic parts.\nRULES: Only parts that EXIST on DigiKey. Meet or exceed all specs. For relays match coil voltage exactly. Use: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet. 4 keySpecs each.\nRespond ONLY with raw JSON:\n{\"category\":\"Type\",\"interpretation\":\"summary\",\"designTip\":\"tip\",\"results\":[{\"partNumber\":\"MPN\",\"manufacturer\":\"Mfr\",\"type\":\"Type\",\"keySpecs\":[{\"label\":\"L\",\"value\":\"V\",\"unit\":\"U\"}],\"package\":\"PKG\",\"rank\":\"top\",\"aeComment\":\"comment\",\"caution\":null,\"applications\":[\"app\"]}]}";
 
 var ALT_SEARCH_SYSTEM = "Find EXACTLY 4 drop-in alternatives. Meet/exceed original specs. Different manufacturers. Must exist on DigiKey. 4 keySpecs each.\nRespond ONLY with raw JSON:\n{\"originalPart\":\"MPN\",\"originalSpecs\":\"specs\",\"alternatives\":[{\"partNumber\":\"MPN\",\"manufacturer\":\"Mfr\",\"type\":\"Type\",\"compatibility\":\"drop-in\",\"keySpecs\":[{\"label\":\"L\",\"value\":\"V\",\"unit\":\"U\"}],\"package\":\"PKG\",\"whyAlternative\":\"reason\",\"differences\":\"diffs\"}],\"importantNote\":\"note\"}";
 
@@ -394,23 +549,28 @@ app.get("/api/health", function(req, res) {
 });
 
 // =============================================
-// CHECK PLAN
+// ANALYTICS ENDPOINT
 // =============================================
-app.post("/api/check-plan", async function(req, res) {
+app.get("/api/analytics", async function(req, res) {
   try {
-    var userId = req.body.userId;
-    if (!userId) return res.json({ plan: "guest", limits: PLANS.guest });
-    var plan = await getUserPlan(userId);
-    res.json({ plan: plan, limits: PLANS[plan] || PLANS.free });
-  } catch (err) { res.json({ plan: "free", limits: PLANS.free }); }
+    var days = parseInt(req.query.days) || 7;
+    var analytics = await supabaseQuery("GET", "daily_analytics", null, "order=date.desc&limit=" + days + "&select=*");
+    var topParts = await supabaseQuery("GET", "part_performance", null, "total_score=gt.0&order=total_score.desc&limit=10&select=part_number,manufacturer,component_type,buy_clicks,total_score,search_count");
+    var totalUsers = await supabaseQuery("GET", "user_sessions", null, "select=count");
+    res.json({ analytics: analytics || [], topParts: topParts || [], totalUsers: totalUsers });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // =============================================
 // TRACK
 // =============================================
 app.post("/api/track", async function(req, res) {
-  try { var data = req.body; if (!data.action || !data.partNumber) return res.json({ ok: false }); await trackInteraction(data); res.json({ ok: true }); }
-  catch (err) { res.json({ ok: false }); }
+  try {
+    var data = req.body;
+    if (!data.action || !data.partNumber) return res.json({ ok: false });
+    await trackInteraction(data);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false }); }
 });
 
 // =============================================
@@ -422,13 +582,15 @@ app.post("/api/feedback", async function(req, res) {
     if (!partNumber || !feedback) return res.status(400).json({ error: "Required fields missing" });
     var score = feedback === "good" ? 5 : -10;
     var queryNorm = (req.body.query || "").toLowerCase().trim().replace(/\s+/g, " ");
-    var existing = await supabaseQuery("GET", "part_performance", null, "query_normalized=eq." + encodeURIComponent(queryNorm) + "&part_number=eq." + encodeURIComponent(partNumber) + "&select=id,total_score,negative_feedback");
+    var existing = await supabaseQuery("GET", "part_performance", null,
+      "query_normalized=eq." + encodeURIComponent(queryNorm) + "&part_number=eq." + encodeURIComponent(partNumber) + "&select=id,total_score,negative_feedback"
+    );
     if (existing && existing.length > 0) {
       var updates = { total_score: (existing[0].total_score || 0) + score, last_updated: new Date().toISOString() };
       if (feedback === "bad") updates.negative_feedback = (existing[0].negative_feedback || 0) + 1;
       await supabaseQuery("PATCH", "part_performance", updates, "id=eq." + existing[0].id);
     } else {
-      await supabaseQuery("POST", "part_performance", { query_normalized: queryNorm, component_type: req.body.componentType || "", part_number: partNumber, manufacturer: req.body.manufacturer || "", total_score: score, negative_feedback: feedback === "bad" ? 1 : 0, buy_clicks: 0, datasheet_clicks: 0, card_clicks: 0, alternative_searches: 0, last_updated: new Date().toISOString() });
+      await supabaseQuery("POST", "part_performance", { query_normalized: queryNorm, component_type: req.body.componentType || "", part_number: partNumber, manufacturer: req.body.manufacturer || "", total_score: score, negative_feedback: feedback === "bad" ? 1 : 0, buy_clicks: 0, datasheet_clicks: 0, card_clicks: 0, alternative_searches: 0, search_count: 0, last_updated: new Date().toISOString() });
     }
     if (feedback === "bad") {
       var ce = await supabaseQuery("GET", "part_catalog", null, "part_number=eq." + encodeURIComponent(partNumber) + "&select=id,negative_count");
@@ -453,7 +615,7 @@ app.post("/api/stock-bulk", async function(req, res) {
 });
 
 // =============================================
-// EXCEL BOM UPLOAD (Pro+ only)
+// EXCEL BOM (Pro+)
 // =============================================
 app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async function(req, res) {
   try {
@@ -491,7 +653,7 @@ app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async fu
           if (alts[1]) result.alt2 = alts[1].partNumber + " (" + alts[1].manufacturer + ")";
           if (alts[2]) result.alt3 = alts[2].partNumber + " (" + alts[2].manufacturer + ")";
         }
-      } catch (e) { console.error("Alt lookup failed for " + row.partNumber); }
+      } catch (e) { console.error("Alt lookup failed:", row.partNumber); }
       results.push(result);
     }
     var csvHeaders = ["Part Number","Description","Quantity","Total Stock","Best Price","Digi-Key Stock","Mouser Stock","Alternative 1","Alternative 2","Alternative 3"];
@@ -504,7 +666,7 @@ app.post("/api/excel-bom", express.raw({ type: "*/*", limit: "10mb" }), async fu
 });
 
 // =============================================
-// RAZORPAY - All plans
+// RAZORPAY
 // =============================================
 app.post("/api/create-order", async function(req, res) {
   try {
@@ -525,7 +687,7 @@ app.post("/api/verify-payment", async function(req, res) {
     if (expected !== req.body.razorpay_signature) return res.status(400).json({ error: "Verification failed" });
     var userId = req.body.userId;
     var planKey = req.body.planKey || "pro_monthly";
-    var planName = planKey.startsWith("team") ? "team" : "pro";
+    var planName = planKey.startsWith("team") ? "team" : planKey.startsWith("enterprise") ? "enterprise" : "pro";
     var expiresAt = new Date();
     if (planKey.includes("yearly")) expiresAt.setFullYear(expiresAt.getFullYear() + 1);
     else expiresAt.setMonth(expiresAt.getMonth() + 1);
@@ -539,41 +701,13 @@ app.post("/api/verify-payment", async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// =============================================
-// API ACCESS (Enterprise)
-// External developers can call this endpoint
-// =============================================
-app.post("/api/v1/search", async function(req, res) {
+app.post("/api/check-plan", async function(req, res) {
   try {
-    var apiKey = req.headers["x-api-key"];
-    if (!apiKey) return res.status(401).json({ error: "API key required. Get yours at parttensor.com/api" });
-    // Verify API key against Supabase
-    var keyResult = await supabaseQuery("GET", "api_keys", null, "key=eq." + encodeURIComponent(apiKey) + "&active=eq.true&select=user_id,plan,requests_today,requests_limit");
-    if (!keyResult || keyResult.length === 0) return res.status(401).json({ error: "Invalid or inactive API key" });
-    var keyData = keyResult[0];
-    if (keyData.requests_today >= keyData.requests_limit) return res.status(429).json({ error: "Daily API limit reached. Upgrade your plan at parttensor.com" });
-    // Increment request count
-    await supabaseQuery("PATCH", "api_keys", { requests_today: keyData.requests_today + 1 }, "key=eq." + encodeURIComponent(apiKey));
-    var query = req.body.query;
-    if (!query) return res.status(400).json({ error: "query is required" });
-    var requiredSpecs = extractRequiredSpecs(query);
-    var componentType = detectComponentType(query);
-    var geminiData = await searchPartsWithGemini(query, componentType, requiredSpecs);
-    var parts = null;
-    if (geminiData && geminiData.results) {
-      parts = await validateWithDigiKey(geminiData.results, requiredSpecs);
-      if (parts.length < 2) {
-        var cr = await callClaude(CLAUDE_PART_SYSTEM, [{ role: "user", content: query }], 3000);
-        var cd = cr.text ? extractJSON(cr.text) : null;
-        if (cd && cd.results) parts = await validateWithDigiKey(cd.results, requiredSpecs);
-      }
-    }
-    if (!parts || parts.length === 0) return res.json({ results: [], message: "No parts found" });
-    var stockResults = await Promise.all(parts.map(function(p) { return fetchStock(p.partNumber); }));
-    var stockMap = {};
-    parts.forEach(function(p, i) { stockMap[p.partNumber] = stockResults[i]; });
-    res.json({ results: parts, stockData: stockMap, query: query, componentType: componentType });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    var userId = req.body.userId;
+    if (!userId) return res.json({ plan: "guest", limits: PLANS.guest });
+    var plan = await getUserPlan(userId);
+    res.json({ plan: plan, limits: PLANS[plan] || PLANS.free });
+  } catch (err) { res.json({ plan: "free", limits: PLANS.free }); }
 });
 
 // =============================================
@@ -587,18 +721,17 @@ app.post("/api/chat", async function(req, res) {
     var userId = req.body.userId || null;
     var clientPlan = req.body.plan || "guest";
     if (!message) return res.status(400).json({ error: "Message is required" });
-    console.log("\n[CHAT]", message.substring(0, 80), "plan:", clientPlan);
+    console.log("\n[CHAT]", message.substring(0, 80));
 
-    // Get actual plan from DB for logged-in users
+    // Get real plan from DB
     var plan = clientPlan;
-    if (userId && (clientPlan === "free" || clientPlan === "pro" || clientPlan === "team")) {
-      plan = await getUserPlan(userId);
-    }
+    if (userId) plan = await getUserPlan(userId);
     var planLimits = PLANS[plan] || PLANS.guest;
+    console.log("Plan:", plan, "BOM:", planLimits.bom);
 
     // USAGE LIMITS
     var identifier = userId || (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown");
-    if (plan === "guest" || plan === "free") {
+    if (!planLimits.messages || planLimits.messages < 9999) {
       try {
         var today = new Date().toISOString().split("T")[0];
         var usageRes = await supabaseQuery("GET", "usage_limits", null, "identifier=eq." + encodeURIComponent(identifier) + "&select=id,message_count,last_reset,plan");
@@ -608,7 +741,9 @@ app.post("/api/chat", async function(req, res) {
             await supabaseQuery("PATCH", "usage_limits", { message_count: 1, last_reset: today }, "id=eq." + usage.id);
           } else {
             var count = (usage.message_count || 0) + 1;
-            if (count > planLimits.messages) return res.json({ error: "Daily limit reached", limitReached: true, plan: plan });
+            if (count > planLimits.messages) {
+              return res.json({ error: "Daily limit reached", limitReached: true, plan: plan });
+            }
             await supabaseQuery("PATCH", "usage_limits", { message_count: count }, "id=eq." + usage.id);
           }
         } else {
@@ -620,18 +755,17 @@ app.post("/api/chat", async function(req, res) {
     var requiredSpecs = extractRequiredSpecs(message);
     var componentType = detectComponentType(message);
 
-    // Classify intent
+    // Intent classification
     var contextSummary = history.slice(-6).map(function(m) { return (m.role === "user" ? "User: " : "AI: ") + (m.content || "").substring(0, 150); }).join("\n");
     var intentInput = history.length > 0 ? "Previous:\n" + contextSummary + "\n\nNew message: " + message : message;
     var intentResult = await callClaude(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 300);
     var intent = "part_search"; var detectedPN = null;
     if (intentResult.text) { var ip = extractJSON(intentResult.text); if (ip) { intent = ip.intent || "part_search"; detectedPN = ip.partNumber || null; } }
     if (isComponentQuery(message) && intent === "general") intent = "part_search";
-    console.log("Intent:", intent, "Plan:", plan, "Component:", componentType);
+    console.log("Intent:", intent, "Component:", componentType, "Specs:", JSON.stringify(requiredSpecs));
 
-    // Block non-electronics
     if (intent === "general") {
-      return res.json({ text: "I am PartTensor, a hardware engineering AI. I can help you find electronic components, check live stock, generate BOMs, and answer circuit design questions.", intent: intent, mode: "text" });
+      return res.json({ text: "I am PartTensor, a hardware engineering AI. I can help you find electronic components, check live stock, generate BOMs, and answer circuit design questions. What component or design challenge can I help you with?", intent: intent, mode: "text" });
     }
 
     var fullMessages = [];
@@ -645,89 +779,130 @@ app.post("/api/chat", async function(req, res) {
       return res.json({ text: engResult.text, intent: intent, mode: "text" });
     }
 
-    // FIND ALTERNATIVES - check limit
+    // FIND ALTERNATIVES
     if (intent === "find_alternatives") {
       var pn = detectedPN || extractPartNumber(message);
       if (!pn) return res.json({ text: "Could you specify the part number you want alternatives for?", intent: intent, mode: "question" });
       var altResult = await callClaude(ALT_SEARCH_SYSTEM, [{ role: "user", content: "Find alternatives for " + pn + ". Context: " + message }], 3000);
       var altData = altResult.text ? extractJSON(altResult.text) : null;
       if (!altData || !altData.alternatives) return res.json({ text: "Could not find alternatives for " + pn + ". Please try again.", intent: intent, mode: "text" });
-      var altParts = await validateWithDigiKey(altData.alternatives || [], {});
+      var altParts = altData.alternatives || [];
       var altStockResults = await Promise.all(altParts.map(function(p) { return fetchStock(p.partNumber); }));
       var altStockMap = {};
       altParts.forEach(function(p, i) { altStockMap[p.partNumber] = altStockResults[i]; });
       altParts.sort(function(a, b) { var aS = altStockMap[a.partNumber] ? altStockMap[a.partNumber].totalStock : 0; var bS = altStockMap[b.partNumber] ? altStockMap[b.partNumber].totalStock : 0; return (bS > 0 ? 1 : 0) - (aS > 0 ? 1 : 0) || bS - aS; });
-      return res.json({ text: "Here are **" + altParts.length + " alternatives** for **" + pn + "** validated on DigiKey:", mode: "alt", originalPart: altData.originalPart || pn, originalSpecs: altData.originalSpecs || "", alternatives: altParts, stockData: altStockMap, importantNote: altData.importantNote || null, intent: intent, query: message, componentType: componentType, requiredVoltage: requiredSpecs.voltage || null, requiredCurrent: requiredSpecs.current || null });
+      return res.json({ text: "Here are **" + altParts.length + " alternatives** for **" + pn + "** with live stock:", mode: "alt", originalPart: altData.originalPart || pn, originalSpecs: altData.originalSpecs || "", alternatives: altParts, stockData: altStockMap, importantNote: altData.importantNote || null, intent: intent, query: message, componentType: componentType, requiredVoltage: requiredSpecs.voltage || null, requiredCurrent: requiredSpecs.current || null });
     }
 
-    // GENERATE BOM - Pro+ only
+    // BOM - Pro+ only
     if (intent === "generate_bom") {
       if (!planLimits.bom) {
-        return res.json({ text: "BOM generation is a Pro feature.", intent: intent, mode: "upgrade", feature: "bom", requiredPlan: "pro" });
+        return res.json({ text: "BOM generation is available on Pro and above.", intent: intent, mode: "upgrade", feature: "bom", requiredPlan: "pro" });
       }
       var bomCacheKey = "bom_" + message.toLowerCase().trim().substring(0, 80);
       var bomCached = getCached(aiCache, bomCacheKey);
       if (bomCached) return res.json(bomCached);
       var bomResult = await callClaude(BOM_SYSTEM, fullMessages, 4000);
       var bomData = bomResult.text ? extractJSON(bomResult.text) : null;
-      if (!bomData || !bomData.bomItems) return res.json({ text: "Could you describe the application in more detail?", intent: intent, mode: "question" });
+      if (!bomData || !bomData.bomItems) return res.json({ text: "Could you describe the application in more detail? Voltage, current, and key requirements?", intent: intent, mode: "question" });
       bomData.stockData = {};
       var bomResponse = Object.assign({ text: "Here is a complete BOM for **" + bomData.projectName + "** -- " + bomData.bomItems.length + " critical components. Stock loading...", intent: intent }, bomData);
       setCache(aiCache, bomCacheKey, bomResponse, AI_TTL);
       return res.json(bomResponse);
     }
 
-    // PART SEARCH - Gemini + DigiKey + Claude fallback
+    // PART SEARCH
+    // Gemini suggests PNs using Google Search
+    // DigiKey checks stock + price only (no spec rejection)
     var searchCacheKey = "search_" + message.toLowerCase().trim().substring(0, 80);
     var searchCached = getCached(aiCache, searchCacheKey);
     var parts = null; var searchMeta = {}; var source = "cache";
 
     if (searchCached) {
+      console.log("Cache hit");
       parts = searchCached.results || [];
       searchMeta = { category: searchCached.category, interpretation: searchCached.interpretation, designTip: searchCached.designTip };
     } else {
+      // Try Gemini with Google Search
       var geminiData = await searchPartsWithGemini(message, componentType, requiredSpecs);
-      if (geminiData && geminiData.results && geminiData.results.length > 0) {
-        var geminiValidated = await validateWithDigiKey(geminiData.results, requiredSpecs);
-        if (geminiValidated.length >= 2) {
-          parts = geminiValidated;
-          searchMeta = { category: geminiData.category || componentType || "", interpretation: geminiData.interpretation || "", designTip: geminiData.designTip || "" };
-          source = "gemini";
-        } else { source = "claude_fallback"; }
-      } else { source = "claude_fallback"; }
 
-      if (source === "claude_fallback") {
+      if (geminiData && geminiData.results && geminiData.results.length > 0) {
+        parts = geminiData.results;
+        searchMeta = { category: geminiData.category || componentType || "", interpretation: geminiData.interpretation || "", designTip: geminiData.designTip || "" };
+        source = "gemini";
+        console.log("Gemini suggested", parts.length, "parts");
+      } else {
+        // Claude fallback
+        console.log("Gemini failed, using Claude fallback...");
         var claudeResult = await callClaude(CLAUDE_PART_SYSTEM, fullMessages, 3000);
         var claudeData = claudeResult.text ? extractJSON(claudeResult.text) : null;
         if (!claudeData || !claudeData.results) {
           var fallback = await callClaude(ENGINEERING_SYSTEM, fullMessages, 1500);
           return res.json({ text: fallback.text || "Could not find specific parts. Please provide more details.", intent: intent, mode: "text" });
         }
-        var claudeValidated = await validateWithDigiKey(claudeData.results, requiredSpecs);
-        parts = claudeValidated.length >= 1 ? claudeValidated : claudeData.results;
+        parts = claudeData.results;
         searchMeta = { category: claudeData.category || componentType || "", interpretation: claudeData.interpretation || "", designTip: claudeData.designTip || "" };
+        source = "claude";
       }
+
       setCache(aiCache, searchCacheKey, Object.assign({ results: parts }, searchMeta), AI_TTL);
     }
 
+    // Apply learned ranking from user behaviour
     var learnedData = await getLearnedRankings(message, componentType);
-    if (learnedData.length > 0) parts = applyLearnedRanking(parts, learnedData);
+    if (learnedData.length > 0) {
+      console.log("Applying learned ranking:", learnedData.length, "entries");
+      parts = applyLearnedRanking(parts, learnedData);
+    }
 
+    // Fetch live stock + price from DigiKey + Mouser in parallel
+    // This is the ONLY DigiKey call - for stock and price, not spec validation
     var stockPromises = parts.map(function(p) { return fetchStock(p.partNumber); });
-    var stockResults2 = await Promise.all(stockPromises);
+    var stockResults = await Promise.all(stockPromises);
     var stockDataMap = {};
-    parts.forEach(function(p, i) { stockDataMap[p.partNumber] = stockResults2[i]; });
+    parts.forEach(function(p, i) {
+      stockDataMap[p.partNumber] = stockResults[i];
+      // Correct MPN if DigiKey found a better match
+      if (stockResults[i] && stockResults[i].digikey && stockResults[i].digikey.matchedMPN) {
+        if (stockResults[i].digikey.matchedMPN !== p.partNumber && stockResults[i].digikey.matchedMPN.length > 3) {
+          console.log("MPN corrected:", p.partNumber, "->", stockResults[i].digikey.matchedMPN);
+          var newMPN = stockResults[i].digikey.matchedMPN;
+          stockDataMap[newMPN] = stockDataMap[p.partNumber];
+          p.partNumber = newMPN;
+        }
+      }
+    });
+
+    // Sort: in-stock first, then by quantity
     parts = parts.slice().sort(function(a, b) {
       var aS = stockDataMap[a.partNumber] ? stockDataMap[a.partNumber].totalStock : 0;
       var bS = stockDataMap[b.partNumber] ? stockDataMap[b.partNumber].totalStock : 0;
       return (bS > 0 ? 1 : 0) - (aS > 0 ? 1 : 0) || bS - aS;
     });
 
+    // Track search behaviour in Supabase (non-blocking)
+    var queryNorm = message.toLowerCase().trim().replace(/\s+/g, " ");
+    trackSearch(userId, sessionId, plan, message, componentType, parts.length, source).catch(function() {});
+    parts.forEach(function(p, i) {
+      updatePartSearchCount(queryNorm, p.partNumber, i + 1).catch(function() {});
+    });
+
+    console.log("Returning", parts.length, "parts, source:", source);
+
     return res.json({
       text: "Found **" + parts.length + " parts** with live stock from Digi-Key and Mouser:",
-      mode: "search", category: searchMeta.category || componentType || "", interpretation: searchMeta.interpretation || "", designTip: searchMeta.designTip || "",
-      results: parts, stockData: stockDataMap, intent: intent, query: message, componentType: componentType,
-      requiredVoltage: requiredSpecs.voltage || null, requiredCurrent: requiredSpecs.current || null, source: source,
+      mode: "search",
+      category: searchMeta.category || componentType || "",
+      interpretation: searchMeta.interpretation || "",
+      designTip: searchMeta.designTip || "",
+      results: parts,
+      stockData: stockDataMap,
+      intent: intent,
+      query: message,
+      componentType: componentType,
+      requiredVoltage: requiredSpecs.voltage || null,
+      requiredCurrent: requiredSpecs.current || null,
+      source: source,
     });
 
   } catch (err) {
@@ -736,7 +911,7 @@ app.post("/api/chat", async function(req, res) {
   }
 });
 
-// Keep alive
+// Keep Render alive
 setInterval(async function() {
   try { var fetch = (await import("node-fetch")).default; await fetch("https://parttensor-backend.onrender.com/api/health"); console.log("Keep-alive ping"); } catch (e) {}
 }, 14 * 60 * 1000);
@@ -744,6 +919,6 @@ setInterval(async function() {
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
   console.log("\nPartTensor backend running on port " + PORT);
-  console.log("Plans: Guest=5/day Free=20/day Pro=unlimited Team=unlimited Enterprise=API");
-  console.log("Part search: Gemini+Google -> DigiKey validate -> Claude fallback\n");
+  console.log("Flow: Gemini (Google Search PNs) -> DigiKey (stock+price only) -> Claude fallback");
+  console.log("Supabase: usage limits + interactions + part_performance + analytics + sessions\n");
 });
