@@ -429,6 +429,108 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
 }
 
 // =============================================
+// SPEC VALIDATION - Check Gemini results before returning
+// =============================================
+function validateSpecsFromJSON(parts, requiredSpecs) {
+  if (!requiredSpecs || Object.keys(requiredSpecs).length === 0) return parts;
+  if (!parts || parts.length === 0) return parts;
+
+  var passed = [];
+  var failed = [];
+
+  parts.forEach(function(part) {
+    var keySpecs = part.keySpecs || [];
+    var partVoltage = null;
+    var partCurrent = null;
+    var partCap = null;
+    var partInd = null;
+
+    keySpecs.forEach(function(spec) {
+      var label = (spec.label || "").toLowerCase();
+      var val = parseFloat(spec.value);
+      if (isNaN(val)) return;
+      var unit = (spec.unit || "").toLowerCase();
+
+      // Voltage
+      if (label === "vds" || label === "vce" || label === "vrrm" || label === "vr" ||
+          label === "voltage" || label === "coil voltage" || label === "working voltage" ||
+          label.includes("volt") && !label.includes("gate") && !label.includes("threshold")) {
+        if (!partVoltage) partVoltage = val;
+      }
+      // Current
+      if (label === "id" || label === "ic" || label === "if" || label === "iout" ||
+          label === "current" || label === "contact current" || label === "rated current" ||
+          label.includes("current") && !label.includes("quies")) {
+        if (!partCurrent) {
+          if (unit === "ma") partCurrent = val / 1000;
+          else partCurrent = val;
+        }
+      }
+      // Capacitance
+      if (label === "capacitance" || label === "cap" || label === "c") {
+        if (!partCap) {
+          if (unit === "nf") partCap = val / 1000;
+          else if (unit === "pf") partCap = val / 1000000;
+          else partCap = val; // assume uF
+        }
+      }
+      // Inductance
+      if (label === "inductance" || label === "l") {
+        if (!partInd) {
+          if (unit === "nh") partInd = val / 1000;
+          else if (unit === "mh") partInd = val * 1000;
+          else partInd = val; // assume uH
+        }
+      }
+    });
+
+    var issues = [];
+
+    // Check voltage
+    if (requiredSpecs.voltage && partVoltage !== null) {
+      if (partVoltage < requiredSpecs.voltage * 0.95) {
+        issues.push("voltage " + partVoltage + "V < required " + requiredSpecs.voltage + "V");
+      }
+    }
+    // Check current
+    if (requiredSpecs.current && partCurrent !== null) {
+      if (partCurrent < requiredSpecs.current * 0.95) {
+        issues.push("current " + partCurrent + "A < required " + requiredSpecs.current + "A");
+      }
+    }
+    // Check capacitance (within 30%)
+    if (requiredSpecs.capacitanceUF && partCap !== null) {
+      if (Math.abs(partCap - requiredSpecs.capacitanceUF) / requiredSpecs.capacitanceUF > 0.30) {
+        issues.push("capacitance " + partCap + "uF != required " + requiredSpecs.capacitanceUF + "uF");
+      }
+    }
+    // Check inductance (within 30%)
+    if (requiredSpecs.inductanceUH && partInd !== null) {
+      if (Math.abs(partInd - requiredSpecs.inductanceUH) / requiredSpecs.inductanceUH > 0.30) {
+        issues.push("inductance " + partInd + "uH != required " + requiredSpecs.inductanceUH + "uH");
+      }
+    }
+
+    if (issues.length > 0) {
+      console.log("  SPEC FAIL:", part.partNumber, issues.join(", "));
+      failed.push(part);
+    } else {
+      console.log("  SPEC OK:", part.partNumber, "voltage:", partVoltage, "current:", partCurrent);
+      passed.push(part);
+    }
+  });
+
+  console.log("Spec validation: " + passed.length + " passed, " + failed.length + " failed");
+
+  // If less than 2 passed - return all (better than nothing)
+  if (passed.length < 2) {
+    console.log("Too few passed spec check - returning all parts");
+    return parts;
+  }
+  return passed;
+}
+
+// =============================================
 // CLAUDE
 // =============================================
 async function callClaude(system, messages, maxTokens) {
@@ -814,6 +916,34 @@ app.post("/api/chat", async function(req, res) {
         searchMeta = { category: geminiData.category || componentType || "", interpretation: geminiData.interpretation || "", designTip: geminiData.designTip || "" };
         source = "gemini";
         console.log("Gemini suggested", parts.length, "parts");
+
+        // Validate specs from Gemini JSON before accepting
+        if (Object.keys(requiredSpecs).length > 0) {
+          console.log("Validating Gemini specs against required:", JSON.stringify(requiredSpecs));
+          var validated = validateSpecsFromJSON(parts, requiredSpecs);
+          if (validated.length < parts.length) {
+            console.log("Some parts failed spec check - retrying Gemini with stricter prompt...");
+            var retryQuery = message + " IMPORTANT: All parts must meet these specs exactly: " +
+              (requiredSpecs.voltage ? "voltage >= " + requiredSpecs.voltage + "V " : "") +
+              (requiredSpecs.current ? "current >= " + requiredSpecs.current + "A " : "") +
+              (requiredSpecs.capacitanceUF ? "capacitance = " + requiredSpecs.capacitanceUF + "uF " : "") +
+              (requiredSpecs.inductanceUH ? "inductance = " + requiredSpecs.inductanceUH + "uH " : "");
+            var retryData = await searchPartsWithGemini(retryQuery, componentType, requiredSpecs);
+            if (retryData && retryData.results) {
+              var retryValidated = validateSpecsFromJSON(retryData.results, requiredSpecs);
+              if (retryValidated.length >= validated.length) {
+                parts = retryValidated;
+                console.log("Retry improved results:", parts.length, "valid parts");
+              } else {
+                parts = validated.length > 0 ? validated : parts;
+              }
+            } else {
+              parts = validated.length > 0 ? validated : parts;
+            }
+          } else {
+            parts = validated;
+          }
+        }
       } else {
         // Claude fallback
         console.log("Gemini failed, using Claude fallback...");
