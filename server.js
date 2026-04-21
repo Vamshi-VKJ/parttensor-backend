@@ -243,30 +243,34 @@ async function getUserPlan(userId) {
 // =============================================
 var digikeyToken = null;
 var digikeyTokenExpiry = null;
+var digikeyTokenRefreshPromise = null;
 
 async function getDigikeyToken() {
   if (digikeyToken && digikeyTokenExpiry && Date.now() < digikeyTokenExpiry) return digikeyToken;
-  var fetch = (await import("node-fetch")).default;
-  try {
-    var res = await fetch("https://api.digikey.com/v1/oauth2/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: process.env.DIGIKEY_CLIENT_ID,
-        client_secret: process.env.DIGIKEY_CLIENT_SECRET,
-      }),
-    });
-    var data = await res.json();
-    if (data.access_token) {
-      digikeyToken = data.access_token;
-      digikeyTokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
-      console.log("DigiKey token refreshed");
-      return digikeyToken;
-    }
-    return null;
-  } catch (e) { console.error("DigiKey token failed:", e.message); return null; }
+  if (digikeyTokenRefreshPromise) return digikeyTokenRefreshPromise;
+  digikeyTokenRefreshPromise = (async function() {
+    var fetch = (await import("node-fetch")).default;
+    try {
+      var res = await fetch("https://api.digikey.com/v1/oauth2/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "client_credentials", client_id: process.env.DIGIKEY_CLIENT_ID, client_secret: process.env.DIGIKEY_CLIENT_SECRET }),
+      });
+      var data = await res.json();
+      if (data.access_token) {
+        digikeyToken = data.access_token;
+        digikeyTokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
+        console.log("DigiKey token refreshed");
+        digikeyTokenRefreshPromise = null;
+        return digikeyToken;
+      }
+      digikeyTokenRefreshPromise = null;
+      return null;
+    } catch (e) { console.error("DigiKey token failed:", e.message); digikeyTokenRefreshPromise = null; return null; }
+  })();
+  return digikeyTokenRefreshPromise;
 }
+
 
 async function lookupDigikey(mpn) {
   try {
@@ -361,7 +365,7 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
     var researchPrompt = "I need to find the best electronic components for this request: " + query + (specsHint ? " Required specs:" + specsHint : "") + ". Please search DigiKey and Mouser right now and find the 4 best matching parts. For each part tell me: exact manufacturer part number, manufacturer name, key specs, package, why it is a good choice, and any cautions. Focus on parts that are currently in stock and from reputable manufacturers like Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet.";
 
     var res1 = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/" + (process.env.GEMINI_MODEL || "gemini-2.5-flash") + ":generateContent?key=" + process.env.GEMINI_API_KEY,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + process.env.GEMINI_API_KEY,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -389,7 +393,7 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
 
     // Step 2: Use Claude to extract structured JSON from Gemini's research
     // This is more reliable than asking Gemini to output JSON directly
-    var claudePrompt = "Extract exactly 4 electronic parts from the research below into a JSON object. Return ONLY the JSON, no markdown, no explanation.\n\nRESEARCH:\n" + researchText.substring(0, 3000) + "\n\nJSON format example:\n{\"category\":\"PCB Relay\",\"interpretation\":\"one sentence\",\"designTip\":\"one tip\",\"results\":[{\"partNumber\":\"EXACT_MPN\",\"manufacturer\":\"Name\",\"type\":\"Type\",\"keySpecs\":[{\"label\":\"Voltage\",\"value\":\"600\",\"unit\":\"V\"},{\"label\":\"Current\",\"value\":\"20\",\"unit\":\"A\"},{\"label\":\"Spec3\",\"value\":\"val\",\"unit\":\"u\"},{\"label\":\"Package\",\"value\":\"PCB\",\"unit\":\"\"}],\"package\":\"PCB\",\"rank\":\"top\",\"aeComment\":\"Why ideal with actual numbers\",\"caution\":null,\"applications\":[\"app\"]}]}";
+    var claudePrompt = "Extract electronic parts from this research into JSON. CRITICAL RULES: 1) Only include parts with a REAL manufacturer part number (MPN) - reject any part where the MPN is TBD, N/A, Example, or contains only words without numbers. 2) Only include parts explicitly mentioned in the research with a specific MPN. 3) If fewer than 4 real MPNs exist in the research, only return those that are real. Return ONLY the JSON object, no markdown.\n\nRESEARCH:\n" + researchText.substring(0, 3000) + "\n\nJSON format:\n{\"category\":\"Connector\",\"interpretation\":\"one sentence\",\"designTip\":\"one tip\",\"results\":[{\"partNumber\":\"REAL_MPN_WITH_NUMBERS\",\"manufacturer\":\"Name\",\"type\":\"Type\",\"keySpecs\":[{\"label\":\"Pins\",\"value\":\"10\",\"unit\":\"\"},{\"label\":\"Current\",\"value\":\"5\",\"unit\":\"A\"},{\"label\":\"Pitch\",\"value\":\"2\",\"unit\":\"mm\"},{\"label\":\"Stack Height\",\"value\":\"12\",\"unit\":\"mm\"}],\"package\":\"SMD\",\"rank\":\"top\",\"aeComment\":\"Specific reason why this fits\",\"caution\":null,\"applications\":[\"Board to Board\"]}]}";
 
     var claudeStruct = await callClaude("You extract electronic component data from research text into JSON. Return ONLY valid JSON, no markdown, no explanation, no text before or after the JSON object.", [{ role: "user", content: claudePrompt }], 3000);
 
@@ -947,6 +951,20 @@ app.post("/api/chat", async function(req, res) {
 
       setCache(aiCache, searchCacheKey, Object.assign({ results: parts }, searchMeta), AI_TTL);
     }
+
+    // Filter out obviously fake MPNs before stock lookup
+    parts = parts.filter(function(part) {
+      var pn = part.partNumber || "";
+      // Reject if looks like placeholder text
+      if (pn.length < 4) return false;
+      if (pn === "TBD" || pn === "N/A" || pn === "EXAMPLE" || pn === "SAMPLE") return false;
+      if (pn.toLowerCase().includes("contact ")) return false;
+      if (pn.toLowerCase().includes("example")) return false;
+      if (pn.toLowerCase().includes("constructed")) return false;
+      if (/^[a-z\s]+$/i.test(pn) && !pn.match(/\d/)) return false; // all letters no numbers = not a real MPN
+      return true;
+    });
+    console.log("After MPN filter:", parts.length, "valid parts");
 
     // Apply learned ranking from user behaviour
     var learnedData = await getLearnedRankings(message, componentType);
