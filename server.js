@@ -361,7 +361,7 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
     var researchPrompt = "I need to find the best electronic components for this request: " + query + (specsHint ? " Required specs:" + specsHint : "") + ". Please search DigiKey and Mouser right now and find the 4 best matching parts. For each part tell me: exact manufacturer part number, manufacturer name, key specs, package, why it is a good choice, and any cautions. Focus on parts that are currently in stock and from reputable manufacturers like Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet.";
 
     var res1 = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + process.env.GEMINI_API_KEY,
+      "https://generativelanguage.googleapis.com/v1beta/models/" + (process.env.GEMINI_MODEL || "gemini-2.5-flash") + ":generateContent?key=" + process.env.GEMINI_API_KEY,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
