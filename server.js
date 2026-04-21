@@ -804,13 +804,32 @@ app.post("/api/chat", async function(req, res) {
     if (!message) return res.status(400).json({ error: "Message is required" });
     console.log("\n[CHAT]", message.substring(0, 80));
 
-    // Get real plan from DB
-    var plan = clientPlan;
-    if (userId) plan = await getUserPlan(userId);
+    var requiredSpecs = extractRequiredSpecs(message);
+    var componentType = detectComponentType(message);
+    var searchCacheKey = "search_" + message.toLowerCase().trim().substring(0, 80);
+    var cachedResult = getCached(aiCache, searchCacheKey);
+
+    // Build intent input
+    var contextSummary = history.slice(-6).map(function(m) { return (m.role === "user" ? "User: " : "AI: ") + (m.content || "").substring(0, 150); }).join("\n");
+    var intentInput = history.length > 0 ? "Previous:\n" + contextSummary + "\n\nNew message: " + message : message;
+
+    // Launch ALL independent tasks in parallel:
+    // 1. Intent classification (Claude)
+    // 2. Gemini part search (if not cached and looks like component query)
+    // 3. Get user plan from DB
+    // 4. Usage limit check
+    var intentPromise = callClaude(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 300);
+    var geminiPromise = (!cachedResult && isComponentQuery(message))
+      ? searchPartsWithGemini(message, componentType, requiredSpecs)
+      : Promise.resolve(null);
+    var planPromise = userId ? getUserPlan(userId) : Promise.resolve(clientPlan);
+
+    // Resolve plan first (needed for usage check)
+    var plan = await planPromise;
     var planLimits = PLANS[plan] || PLANS.guest;
     console.log("Plan:", plan, "BOM:", planLimits.bom);
 
-    // USAGE LIMITS
+    // Usage limits check (only for limited plans)
     var identifier = userId || (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown");
     if (!planLimits.messages || planLimits.messages < 9999) {
       try {
@@ -822,9 +841,7 @@ app.post("/api/chat", async function(req, res) {
             await supabaseQuery("PATCH", "usage_limits", { message_count: 1, last_reset: today }, "id=eq." + usage.id);
           } else {
             var count = (usage.message_count || 0) + 1;
-            if (count > planLimits.messages) {
-              return res.json({ error: "Daily limit reached", limitReached: true, plan: plan });
-            }
+            if (count > planLimits.messages) return res.json({ error: "Daily limit reached", limitReached: true, plan: plan });
             await supabaseQuery("PATCH", "usage_limits", { message_count: count }, "id=eq." + usage.id);
           }
         } else {
@@ -833,13 +850,8 @@ app.post("/api/chat", async function(req, res) {
       } catch (e) { console.error("Usage check failed:", e.message); }
     }
 
-    var requiredSpecs = extractRequiredSpecs(message);
-    var componentType = detectComponentType(message);
-
-    // Intent classification
-    var contextSummary = history.slice(-6).map(function(m) { return (m.role === "user" ? "User: " : "AI: ") + (m.content || "").substring(0, 150); }).join("\n");
-    var intentInput = history.length > 0 ? "Previous:\n" + contextSummary + "\n\nNew message: " + message : message;
-    var intentResult = await callClaude(INTENT_SYSTEM, [{ role: "user", content: intentInput }], 300);
+    // Resolve intent (was running in parallel with above)
+    var intentResult = await intentPromise;
     var intent = "part_search"; var detectedPN = null;
     if (intentResult.text) { var ip = extractJSON(intentResult.text); if (ip) { intent = ip.intent || "part_search"; detectedPN = ip.partNumber || null; } }
     if (isComponentQuery(message) && intent === "general") intent = "part_search";
@@ -893,21 +905,15 @@ app.post("/api/chat", async function(req, res) {
     }
 
     // PART SEARCH
-    // Gemini suggests PNs using Google Search
-    // DigiKey checks stock + price only (no spec rejection)
-    var searchCacheKey = "search_" + message.toLowerCase().trim().substring(0, 80);
-    var searchCached = getCached(aiCache, searchCacheKey);
     var parts = null; var searchMeta = {}; var source = "cache";
 
-    if (searchCached) {
-      console.log("Cache hit");
-      parts = searchCached.results || [];
-      searchMeta = { category: searchCached.category, interpretation: searchCached.interpretation, designTip: searchCached.designTip };
+    if (cachedResult) {
+      console.log("Cache hit - instant");
+      parts = cachedResult.results || [];
+      searchMeta = { category: cachedResult.category, interpretation: cachedResult.interpretation, designTip: cachedResult.designTip };
     } else {
-      // Try Gemini with Google Search
-      global._lastGeminiResearch = null;
-      var geminiData = await searchPartsWithGemini(message, componentType, requiredSpecs);
-      var geminiResearchText = global._lastGeminiResearch || null;
+      // Use Gemini promise that was already running in parallel
+      var geminiData = await geminiPromise;
 
       if (geminiData && geminiData.results && geminiData.results.length > 0) {
         parts = geminiData.results;
@@ -979,25 +985,26 @@ app.post("/api/chat", async function(req, res) {
     });
     console.log("After MPN filter:", parts.length, "valid parts");
 
-    // Apply learned ranking from user behaviour
-    var learnedData = await getLearnedRankings(message, componentType);
+    // Run learned rankings AND stock lookup in parallel
+    var stockPromisesArr = parts.map(function(p) { return fetchStock(p.partNumber); });
+    var learnedDataPromise = getLearnedRankings(message, componentType);
+    var parallelResults = await Promise.all([learnedDataPromise, Promise.all(stockPromisesArr)]);
+    var learnedData = parallelResults[0];
+    var stockResultsArr = parallelResults[1];
+
     if (learnedData.length > 0) {
       console.log("Applying learned ranking:", learnedData.length, "entries");
       parts = applyLearnedRanking(parts, learnedData);
     }
 
-    // Fetch live stock + price from DigiKey + Mouser in parallel
-    // This is the ONLY DigiKey call - for stock and price, not spec validation
-    var stockPromises = parts.map(function(p) { return fetchStock(p.partNumber); });
-    var stockResults = await Promise.all(stockPromises);
-    var stockDataMap = {};
+    // Stock already fetched above in paralle    var stockDataMap = {};
     parts.forEach(function(p, i) {
-      stockDataMap[p.partNumber] = stockResults[i];
+      stockDataMap[p.partNumber] = stockResultsArr[i];
       // Correct MPN if DigiKey found a better match
-      if (stockResults[i] && stockResults[i].digikey && stockResults[i].digikey.matchedMPN) {
-        if (stockResults[i].digikey.matchedMPN !== p.partNumber && stockResults[i].digikey.matchedMPN.length > 3) {
-          console.log("MPN corrected:", p.partNumber, "->", stockResults[i].digikey.matchedMPN);
-          var newMPN = stockResults[i].digikey.matchedMPN;
+      if (stockResults[i] && stockResultsArr[i] && stockResultsArr[i].digikey && stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN) {
+        if (stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN !== p.partNumber && stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN.length > 3) {
+          console.log("MPN corrected:", p.partNumber, "->", stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN);
+          var newMPN = stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN;
           stockDataMap[newMPN] = stockDataMap[p.partNumber];
           p.partNumber = newMPN;
         }
