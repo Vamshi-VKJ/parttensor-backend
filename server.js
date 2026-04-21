@@ -35,7 +35,7 @@ var PRICES = {
 var stockCache = {};
 var aiCache = {};
 var STOCK_TTL = 2 * 60 * 60 * 1000;
-var AI_TTL = 6 * 60 * 60 * 1000;
+var AI_TTL = 24 * 60 * 60 * 1000;
 
 function getCached(cache, key) {
   var entry = cache[key];
@@ -364,9 +364,11 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
     // Step 1: Let Gemini search freely and think like an engineer
     var researchPrompt = "I need to find the best electronic components for this request: " + query + (specsHint ? " Required specs:" + specsHint : "") + ". Please search DigiKey and Mouser right now and find the 4 best matching parts. For each part tell me: exact manufacturer part number, manufacturer name, key specs, package, why it is a good choice, and any cautions. Focus on parts that are currently in stock and from reputable manufacturers like Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet.";
 
-    var res1 = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + process.env.GEMINI_API_KEY,
-      {
+    // Gemini with retry on 503/429
+    var geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/" + (process.env.GEMINI_MODEL || "gemini-2.5-flash") + ":generateContent?key=" + process.env.GEMINI_API_KEY;
+    var res1 = null;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      res1 = await fetch(geminiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -374,15 +376,16 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
           tools: [{ google_search: {} }],
           generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
         }),
-      }
-    );
-
-    if (!res1.ok) {
-      var errText = await res1.text();
-      console.error("Gemini research error:", res1.status, errText.substring(0, 300));
-      return null;
+      });
+      if (res1.ok) break;
+      var errBody = await res1.text();
+      console.error("Gemini attempt", attempt, ":", res1.status, errBody.substring(0, 150));
+      if ((res1.status === 503 || res1.status === 429) && attempt < 3) {
+        console.log("Retrying Gemini in", attempt * 4, "seconds...");
+        await new Promise(function(r) { setTimeout(r, attempt * 4000); });
+      } else { break; }
     }
-
+    if (!res1 || !res1.ok) { console.error("Gemini failed all attempts"); return null; }
     var data1 = await res1.json();
     var candidates1 = data1.candidates || [];
     if (candidates1.length === 0) return null;
@@ -390,6 +393,8 @@ async function searchPartsWithGemini(query, componentType, requiredSpecs) {
     console.log("Gemini research (500):", researchText.substring(0, 500));
 
     if (!researchText || researchText.length < 100) return null;
+    // Store research text globally so fallback can use it
+    global._lastGeminiResearch = researchText;
 
     // Step 2: Use Claude to extract structured JSON from Gemini's research
     // This is more reliable than asking Gemini to output JSON directly
@@ -611,7 +616,7 @@ var INTENT_SYSTEM = "You classify hardware engineering queries. RULES:\n1. ANY m
 
 var ENGINEERING_SYSTEM = "You are PartTensor, a senior hardware application engineer AI. Help engineers with component selection, circuit design, calculations, and troubleshooting. Be direct, technical and precise. Format with **bold headers** and - bullet points.";
 
-var CLAUDE_PART_SYSTEM = "You are a senior hardware application engineer. Suggest EXACTLY 4 real electronic parts.\nRULES: Only parts that EXIST on DigiKey. Meet or exceed all specs. For relays match coil voltage exactly. Use: Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas, Omron, TE Connectivity, Panasonic, Murata, Wurth, Kemet. 4 keySpecs each.\nRespond ONLY with raw JSON:\n{\"category\":\"Type\",\"interpretation\":\"summary\",\"designTip\":\"tip\",\"results\":[{\"partNumber\":\"MPN\",\"manufacturer\":\"Mfr\",\"type\":\"Type\",\"keySpecs\":[{\"label\":\"L\",\"value\":\"V\",\"unit\":\"U\"}],\"package\":\"PKG\",\"rank\":\"top\",\"aeComment\":\"comment\",\"caution\":null,\"applications\":[\"app\"]}]}";
+var CLAUDE_PART_SYSTEM = "You are a senior hardware application engineer. Suggest EXACTLY 4 real electronic parts.\nRULES:\n1. Only parts that ACTUALLY EXIST on DigiKey with real MPNs.\n2. Meet or exceed all specs.\n3. For connectors: match pin count, pitch, stack height, current. Use TE Connectivity, Molex, Amphenol, Samtec, Hirose, JST, Wurth Elektronik.\n4. For relays: match coil voltage exactly. Use Omron, TE, Panasonic.\n5. For semiconductors: Use Infineon, Vishay, ON Semi, TI, STMicro, Rohm, Renesas.\n6. If additional web research context is in the message, use those part numbers and manufacturers first.\n7. 4 keySpecs each - most important first.\nRespond ONLY with raw JSON:\n{\"category\":\"Type\",\"interpretation\":\"summary\",\"designTip\":\"tip\",\"results\":[{\"partNumber\":\"MPN\",\"manufacturer\":\"Name\",\"type\":\"Type\",\"keySpecs\":[{\"label\":\"L\",\"value\":\"V\",\"unit\":\"U\"}],\"package\":\"PKG\",\"rank\":\"top\",\"aeComment\":\"comment\",\"caution\":null,\"applications\":[\"app\"]}]}";
 
 var ALT_SEARCH_SYSTEM = "Find EXACTLY 4 drop-in alternatives. Meet/exceed original specs. Different manufacturers. Must exist on DigiKey. 4 keySpecs each.\nRespond ONLY with raw JSON:\n{\"originalPart\":\"MPN\",\"originalSpecs\":\"specs\",\"alternatives\":[{\"partNumber\":\"MPN\",\"manufacturer\":\"Mfr\",\"type\":\"Type\",\"compatibility\":\"drop-in\",\"keySpecs\":[{\"label\":\"L\",\"value\":\"V\",\"unit\":\"U\"}],\"package\":\"PKG\",\"whyAlternative\":\"reason\",\"differences\":\"diffs\"}],\"importantNote\":\"note\"}";
 
@@ -900,7 +905,9 @@ app.post("/api/chat", async function(req, res) {
       searchMeta = { category: searchCached.category, interpretation: searchCached.interpretation, designTip: searchCached.designTip };
     } else {
       // Try Gemini with Google Search
+      global._lastGeminiResearch = null;
       var geminiData = await searchPartsWithGemini(message, componentType, requiredSpecs);
+      var geminiResearchText = global._lastGeminiResearch || null;
 
       if (geminiData && geminiData.results && geminiData.results.length > 0) {
         parts = geminiData.results;
@@ -936,9 +943,15 @@ app.post("/api/chat", async function(req, res) {
           }
         }
       } else {
-        // Claude fallback
+        // Claude fallback - pass Gemini research as context if available
         console.log("Gemini failed, using Claude fallback...");
-        var claudeResult = await callClaude(CLAUDE_PART_SYSTEM, fullMessages, 3000);
+        var claudeMessages = fullMessages;
+        if (geminiResearchText) {
+          // Give Claude the benefit of Gemini's web research
+          var enrichedMessage = message + "\n\nAdditional context from web search:\n" + geminiResearchText.substring(0, 1500);
+          claudeMessages = fullMessages.slice(0, -1).concat([{ role: "user", content: enrichedMessage }]);
+        }
+        var claudeResult = await callClaude(CLAUDE_PART_SYSTEM, claudeMessages, 3000);
         var claudeData = claudeResult.text ? extractJSON(claudeResult.text) : null;
         if (!claudeData || !claudeData.results) {
           var fallback = await callClaude(ENGINEERING_SYSTEM, fullMessages, 1500);
