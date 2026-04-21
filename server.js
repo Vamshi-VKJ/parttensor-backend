@@ -997,14 +997,15 @@ app.post("/api/chat", async function(req, res) {
       parts = applyLearnedRanking(parts, learnedData);
     }
 
-    // Stock already fetched above in paralle    var stockDataMap = {};
+    // Stock already fetched above in parallel with rankings
+    var stockDataMap = {};
     parts.forEach(function(p, i) {
       stockDataMap[p.partNumber] = stockResultsArr[i];
       // Correct MPN if DigiKey found a better match
-      if (stockResults[i] && stockResultsArr[i] && stockResultsArr[i].digikey && stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN) {
-        if (stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN !== p.partNumber && stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN.length > 3) {
-          console.log("MPN corrected:", p.partNumber, "->", stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN);
-          var newMPN = stockResultsArr[i] && stockResultsArr[i].digikey.matchedMPN;
+      if (stockResultsArr[i] && stockResultsArr[i].digikey && stockResultsArr[i].digikey.matchedMPN) {
+        if (stockResultsArr[i].digikey.matchedMPN !== p.partNumber && stockResultsArr[i].digikey.matchedMPN.length > 3) {
+          console.log("MPN corrected:", p.partNumber, "->", stockResultsArr[i].digikey.matchedMPN);
+          var newMPN = stockResultsArr[i].digikey.matchedMPN;
           stockDataMap[newMPN] = stockDataMap[p.partNumber];
           p.partNumber = newMPN;
         }
